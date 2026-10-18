@@ -9,6 +9,7 @@ from typing import Callable
 from .agent import Action
 
 Constraint = Callable[[Action], "str | None"]  # returns a denial reason, or None to allow
+ParamRule = Callable[[dict], "str | None"]       # checks an action's params (see muffin.rules)
 
 
 @dataclass
@@ -18,6 +19,8 @@ class Policy:
     max_actions_per_window: int | None = None      # rate limit
     window_seconds: float = 60.0
     constraints: list[Constraint] = field(default_factory=list)
+    # Per-action argument checks, e.g. {"send_email": [email_domain("to", "example.com")]}
+    param_rules: dict[str, list[ParamRule]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,10 @@ class SafetyLayer:
             return Verdict(False, "no policy registered")
         if action.name not in policy.allowed_actions:
             return Verdict(False, f"action '{action.name}' not in allowed set (default deny)")
+        for rule in policy.param_rules.get(action.name, []):
+            reason = rule(action.params)
+            if reason:
+                return Verdict(False, f"parameter rule violated: {reason}")
         if self._spent[agent_id] + action.cost > policy.max_total_cost:
             return Verdict(False, "total action budget exceeded")
         if policy.max_actions_per_window is not None:

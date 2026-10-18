@@ -118,14 +118,15 @@ class Runtime:
         except Exception as exc:
             return self._fail(agent_id, h, "agent error during perceive/decide", exc)
 
+        why = h.agent.explain()
         if action is None:
-            return self.trace.record(agent_id, "no_action", step=h.step, perception=perception)
+            return self.trace.record(agent_id, "no_action", step=h.step, perception=perception, explanation=why)
 
         verdict = self.safety.check(agent_id, action)
         if not verdict.allowed:
             self.memory.write(agent_id, "blocked", {"action": action.name, "reason": verdict.reason})
             return self.trace.record(agent_id, "blocked", step=h.step, action=action.name,
-                                     params=action.params, reason=verdict.reason)
+                                     params=action.params, reason=verdict.reason, explanation=why)
         try:
             outcome = h.agent.act(action)
         except Exception as exc:
@@ -134,7 +135,7 @@ class Runtime:
         self.safety.commit(agent_id, action)
         self.memory.write(agent_id, "action", {"action": action.name, "params": action.params, "outcome": outcome})
         return self.trace.record(agent_id, "acted", step=h.step, perception=perception, action=action.name,
-                                 params=action.params, verdict=verdict.reason, outcome=outcome)
+                                 params=action.params, verdict=verdict.reason, outcome=outcome, explanation=why)
 
     def run(self, agent_id: str, inputs: Iterable[Any]) -> list[dict[str, Any]]:
         results = []

@@ -233,16 +233,31 @@ Five pillars progress in parallel across a multi-year horizon (~146 topics).
 ```
 MUFFIN/
 ├── README.md
+├── CONTRIBUTING.md
 ├── LICENSE
 ├── .gitignore
+├── .env.example
+├── pyproject.toml
+├── .github/workflows/ci.yml     # tests on Python 3.10 to 3.12
 ├── docs/
 │   ├── vision.md
 │   └── architecture.md
-├── mathematics/             # P1: derivations, proofs, implementations
-├── systems/                 # P2: runtime, services, infra
-├── simulation/              # P3: physics and simulation experiments
-├── cognitive-architecture/  # P4: memory, planning, safety, agents
-└── founder-intelligence/    # P5: strategy, research, business docs
+├── src/muffin/                  # the runtime
+│   ├── agent.py                 # Agent SDK
+│   ├── runtime.py               # lifecycle, checkpoint/rollback, agent loop
+│   ├── safety.py                # default-deny policy, budgets, kill switch
+│   ├── rules.py                 # parameter rules
+│   ├── memory.py                # episodic memory (SQLite)
+│   ├── trace.py                 # decision traces (JSONL)
+│   ├── llm_agent.py             # LLM-driven agent
+│   └── providers.py             # model providers (Anthropic)
+├── tests/                       # pytest suite
+├── examples/                    # runnable demos
+├── mathematics/                 # P1 notes and experiments
+├── systems/                     # P2
+├── simulation/                  # P3
+├── cognitive-architecture/      # P4
+└── founder-intelligence/        # P5
 ```
 
 ---
@@ -266,16 +281,63 @@ MUFFIN/
 git clone https://github.com/<your-username>/MUFFIN.git
 cd MUFFIN
 python -m venv .venv && source .venv/bin/activate
-cp .env.example .env   # add your keys; never commit .env
+pip install -e ".[dev]"
+cp .env.example .env   # never commit .env
+pytest
+python examples/hello_agent.py
 ```
 
-> Runnable code is coming. Right now the repo holds the foundations: vision, architecture, and pillar notes.
+### Minimal example
+
+```python
+from muffin import Action, Agent, Policy, Runtime
+
+class Greeter(Agent):
+    def decide(self):
+        return Action("greet", {"name": "Ada"})
+    def act(self, action):
+        return f"Hello, {action.params['name']}!"
+
+rt = Runtime(trace_path="traces/demo.jsonl")
+agent_id = rt.spawn(Greeter(), Policy(allowed_actions={"greet"}, max_total_cost=3))
+rt.start(agent_id)
+print(rt.step(agent_id)["outcome"])   # Hello, Ada!
+```
+
+### LLM agent with a safety policy
+
+```python
+from muffin import LLMAgent, Policy, Runtime, Tool, rules
+
+tools = [Tool("send_email", "Send an email. params: to, body", lambda to, body: f"sent to {to}", cost=5)]
+policy = Policy(
+    allowed_actions={"send_email"},
+    param_rules={"send_email": [rules.only_keys("to", "body"), rules.email_domain("to", "example.com")]},
+)
+# `model` is any function (system_prompt, prompt) -> str, e.g. muffin.AnthropicCompleter()
+agent = LLMAgent(model, tools, goal="Report prices to the ops team.")
+rt = Runtime(trace_path="traces/run.jsonl")
+aid = rt.spawn(agent, policy); rt.start(aid)
+rt.step(aid, "untrusted text from the outside world")   # a hijacked model still cannot email attacker@evil.test
+```
+
+Run `python examples/llm_agent.py` to watch a hijacked (scripted) model get contained, offline. Add `--live` with `ANTHROPIC_API_KEY` set and `pip install -e ".[llm]"` to use a real model.
+
+### What works today
+
+- Agent lifecycle: spawn, start, pause, resume, checkpoint, rollback, kill
+- Episodic memory with rollback support
+- Default-deny safety: allowed actions, parameter rules, cost budgets, rate limits, custom constraints, kill switch; fails closed
+- Decision traces with agent-provided explanations
+- LLM-driven agents with prompt-injection containment
+
+**Not built yet:** semantic and procedural memory, learning engine, planning, multi-agent coordination, metrics and dashboards, control panel. See [docs/architecture.md](docs/architecture.md) for the full design.
 
 ---
 
 ## 🤝 Contributing
 
-MUFFIN is in its earliest stage. Ideas, issues, and discussion on architecture are welcome. Please open an issue before sending a pull request.
+MUFFIN is in its earliest stage. Ideas, issues, and discussion on architecture are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) and open an issue before sending a pull request.
 
 ---
 

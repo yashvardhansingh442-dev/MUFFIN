@@ -37,6 +37,10 @@ class Agent(ABC):
     def act(self, action: Action) -> Any:
         """Execute an action the safety layer has approved."""
 
+    def explain(self) -> str | None:
+        """Optional: why the agent chose its last action. Recorded in the decision trace."""
+        return None
+
     # State capture is what makes checkpoint and rollback possible.
     def get_state(self) -> dict[str, Any]:
         return {}
