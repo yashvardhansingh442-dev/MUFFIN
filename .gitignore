@@ -27,8 +27,12 @@ env/
 *.key
 secrets/
 
-# Data, models, and outputs (large files)
+# MUFFIN runtime output
+traces/
 data/
+*.db
+
+# Data, models, and outputs (large files)
 datasets/
 checkpoints/
 *.pt
