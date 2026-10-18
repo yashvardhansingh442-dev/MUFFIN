@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Secrets (never commit these)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Data, models, and outputs (large files)
+data/
+datasets/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.h5
+*.safetensors
+logs/
+wandb/
+runs/
+
+# Obsidian (if you keep notes in the repo)
+.obsidian/workspace*.json
+.obsidian/cache
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
