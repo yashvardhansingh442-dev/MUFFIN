@@ -25,7 +25,10 @@ class Tool:
     description: str
     fn: Callable[..., Any]
     cost: float = 1.0
-
+    
+def _escape(text: Any) -> str:
+    """Neutralize angle brackets so untrusted text cannot forge or close prompt tags like </input>."""
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 def _extract_json(text: str) -> dict[str, Any] | None:
     """Pull the first JSON object out of a model reply, tolerating code fences and chatter."""
