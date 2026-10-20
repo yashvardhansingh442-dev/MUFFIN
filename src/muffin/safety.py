@@ -1,6 +1,7 @@
 """Safety layer: default-deny, fail-closed enforcement outside the agent's control."""
 from __future__ import annotations
 
+import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
