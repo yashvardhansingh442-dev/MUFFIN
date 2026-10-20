@@ -163,7 +163,7 @@ These are analogies for direction, not claims of equivalent scale or functionali
 | Model-agnostic: any `complete(system, prompt) -> str` works | Tied to one vendor |
 | Honest about gaps (see [limitations](#15-known-limitations-v01)) | A claim that policies, budgets, traces, or a kill switch make an agent safe |
 
-**Who it is for (initial audience):** developers and small teams building tool-using agents that need explicit permissions and a record of what happened, and researchers who want a small codebase to experiment with runtime-level agent controls. The exact customer segment is a hypothesis until validated; see [docs/product-and-roadmap.md](docs/product-and-roadmap.md).
+**Who it is for (initial audience):** developers and small teams building tool-using agents that need explicit permissions and a record of what happened, and researchers who want a small codebase to experiment with runtime-level agent controls. The exact customer segment is a hypothesis until validated; see the [roadmap](#16-roadmap), Stage B.
 
 ---
 
@@ -334,7 +334,7 @@ Everything below is exported from the top-level `muffin` package.
 
 ### 6.1 `Agent` and `Action`
 
-An `Action` is an immutable proposal: `Action(name, params={}, cost=1.0)`. It is **never executed directly**; the runtime submits it to the safety layer first.
+An `Action` is an immutable proposal: `Action(name, params={}, cost=1.0)`. It is **never executed directly**; the runtime submits it to the safety layer first. `cost` must be a finite number `>= 0`; anything else (negative, `NaN`, `inf`, a bool, a string) is denied before the action can run.
 
 To write an agent, subclass `Agent` and implement `decide` and `act`. Everything else has a default.
 
@@ -420,10 +420,11 @@ Checks run in this order and the first denial wins. Every denial is written to m
 | 1 | Kill switch tripped? | `kill switch tripped: <reason>` |
 | 2 | Policy registered for this agent? | `no policy registered` |
 | 3 | Action in `allowed_actions`? | `action '<name>' not in allowed set (default deny)` |
-| 4 | Parameter rules for this action | `parameter rule violated: <reason>` |
-| 5 | Lifetime budget | `total action budget exceeded` |
-| 6 | Rate limit | `rate limit exceeded` |
-| 7 | Custom constraints | `constraint violated: <reason>` |
+| 4 | Action cost valid (finite number, `>= 0`, not a bool)? | `invalid action cost <value>: must be a finite number >= 0` |
+| 5 | Parameter rules for this action | `parameter rule violated: <reason>` |
+| 6 | Lifetime budget | `total action budget exceeded` |
+| 7 | Rate limit | `rate limit exceeded` |
+| 8 | Custom constraints | `constraint violated: <reason>` |
 
 If any check **raises an exception**, the verdict is a denial (`safety error, failing closed`). Spending is recorded only after an approved action executes successfully (`commit`).
 
@@ -434,12 +435,13 @@ If any check **raises an exception**, the verdict is a denial (`safety error, fa
 - A model, hijacked or merely mistaken, proposing an action the policy never allowed (hallucinated tool names included).
 - A model proposing an allowed action with out-of-policy arguments (wrong recipient domain, extra parameters, oversized body).
 - Runaway loops: bounded by the lifetime budget and the rate limit, subject to the cost caveat below.
+- An agent proposing a malformed cost (negative, `NaN`, `inf`, non-numeric) to evade the budget: denied before execution.
 - An operator needing to stop an agent immediately.
 
 **Out of scope today (what it does not protect against):**
 
 - Agent code that performs side effects directly instead of through approved actions. The policy only governs what is routed through the runtime.
-- Malicious agent code that lies about its own `Action.cost` (see [limitations](#15-known-limitations-v01)).
+- Malicious agent code that **under-reports** its own `Action.cost` (for example always `0`). Malformed costs are rejected, but the number is still declared by the agent (see [limitations](#15-known-limitations-v01), L1).
 - Credential theft, sandbox escape, supply-chain compromise, and network exfiltration. There is no sandbox or identity layer.
 - Detecting that a goal was hijacked. The runtime limits what a hijacked agent can *do*; it does not notice the hijack.
 
@@ -449,7 +451,7 @@ An honest self-assessment of v0.1 against the list in [section 1.2](#12-the-indu
 
 | Risk | Coverage | What exists | What is missing |
 |---|---|---|---|
-| ASI01 Goal Hijack | **Partial (containment)** | Allowlist and parameter rules cap what a hijacked agent can do; the offline demo shows a hijacked model blocked | No detection; `LLMAgent` prompt delimiters are escapable; tool results in history are not marked untrusted |
+| ASI01 Goal Hijack | **Partial (containment)** | Allowlist and parameter rules cap what a hijacked agent can do; the offline demo shows a hijacked model blocked | No detection; `LLMAgent` escapes angle brackets in input and history, but delimiters remain a hint to the model, not a boundary; tool results are not otherwise marked untrusted |
 | ASI02 Tool Misuse | **Partial** | Allowlist, per-tool parameter rules, cost budget, rate limit | Rules must be hand-written per tool; no sandbox; no tool-metadata integrity checks |
 | ASI03 Identity & Privilege | **None** | Per-agent policy only | No agent identity, credential scoping, or attribution beyond a random id |
 | ASI04 Supply Chain | **None** | n/a | No agent bill of materials, provenance, or signing |
@@ -468,7 +470,7 @@ Read this as a map of the work ahead, not a score.
 - **Put `only_keys` first** in every action's rule list, so unexpected parameters are rejected before anything else is inspected.
 - **Prefer closed sets over patterns.** `one_of` beats `matches`; `matches` beats nothing.
 - **Constrain every free-text and numeric parameter** with `max_len` and `number_between`.
-- **Make cost reflect real risk.** An email costs more than a lookup; cheap read-only actions can be rate-limited generously, irreversible ones tightly.
+- **Make cost reflect real risk.** An email costs more than a lookup; cheap read-only actions can be rate-limited generously, irreversible ones tightly. Define costs in trusted code (for example `Tool.cost`), because a custom `Agent` declares its own `Action.cost`.
 - **Test the denied path.** Every policy should ship with tests that prove the bad cases are blocked.
 
 ### 7.5 Design direction: restricted mode after untrusted input
@@ -862,17 +864,17 @@ Injecting a clock into `SafetyLayer` makes rate-limit tests deterministic, which
 
 ## 14. Testing
 
-The suite has **43 tests** in three files and runs in well under a second. CI runs it on Python 3.10, 3.11, and 3.12, then runs `examples/hello_agent.py` as a smoke test.
+The suite has **52 tests** in three files and runs in well under a second. CI runs it on Python 3.10, 3.11, and 3.12, then runs `examples/hello_agent.py` as a smoke test.
 
 | File | Covers |
 |---|---|
-| `tests/test_runtime.py` | Allowed actions execute and are remembered; default deny; total budget; rate limit including window expiry; constraint veto; fail-closed on a crashing constraint; pause and resume; kill preserves memory; checkpoint and rollback restore state, memory, and budget; rollback is audited; an agent exception fails the agent without crashing the runtime; invalid transitions rejected; `run` stops when the agent leaves `running`; memory persists to disk |
+| `tests/test_runtime.py` | Allowed actions execute and are remembered; default deny; total budget; rate limit including window expiry; constraint veto; fail-closed on a crashing constraint; pause and resume; kill preserves memory; checkpoint and rollback restore state, memory, and budget; rollback is audited; an agent exception fails the agent without crashing the runtime; invalid transitions rejected; `run` stops when the agent leaves `running`; memory persists to disk; hostile costs (negative, `NaN`, `inf`, bool, string) are blocked and never spent; zero and normal costs still run |
 | `tests/test_param_rules.py` | Good and bad parameters; `email_domain` against smuggling tricks (second address, newline injection, look-alike and sub-domains, empty, `None`, non-string); unexpected and missing params fail closed; rules apply only to their own action; a crashing rule fails closed; `number_between`; `matches` uses `fullmatch`; `one_of` |
-| `tests/test_llm_agent.py` | Approved tool call runs with explanation traced; real-but-unlisted tool blocked; hallucinated tool blocked, not crashed; prompt injection cannot exceed the policy; malformed output is a safe no-action; model outage does not kill the agent; JSON in code fences and chatter; tool errors reported, not fatal; budget governs the model; history reaches the next prompt and rollback restores it; JSON-extraction edge cases |
+| `tests/test_llm_agent.py` | Approved tool call runs with explanation traced; real-but-unlisted tool blocked; hallucinated tool blocked, not crashed; prompt injection cannot exceed the policy; malformed output is a safe no-action; model outage does not kill the agent; JSON in code fences and chatter; tool errors reported, not fatal; budget governs the model; history reaches the next prompt and rollback restores it; JSON-extraction edge cases; untrusted input and tool results cannot close or forge the `<input>` tag |
 
 The project's rule is that a safety mechanism needs a test that proves it **blocks** something, because an untested safety mechanism is assumed broken.
 
-**Gaps worth closing** (also tracked in the [roadmap](#16-roadmap)): hostile `Action.cost` values (zero, negative, NaN); prompt-delimiter breakout; rollback with an active rate limit; failure injection around `act`, memory, and trace writes; concurrent use; and tests against the live provider behind an opt-in flag.
+**Gaps worth closing** (also tracked in the [roadmap](#16-roadmap)): agents that under-report cost as zero (L1); rollback with an active rate limit; failure injection around `act`, memory, and trace writes; concurrent use; and tests against the live provider behind an opt-in flag.
 
 ---
 
@@ -882,8 +884,8 @@ These are known gaps in the current code, listed so nobody relies on a guarantee
 
 | ID | Limitation | Severity | Workaround |
 |---|---|---|---|
-| L1 | **Budgets trust the agent's cost.** `Action.cost` is set by the agent, so a custom `Agent` can propose `0`, a negative number, or `NaN` and slip past `max_total_cost`. `LLMAgent` takes costs from its tool table and is not affected. | High | Do not rely on budgets with untrusted agent code; define costs in trusted code |
-| L2 | **Prompt delimiters are a hint, not a boundary.** `LLMAgent` wraps input in `<input>` tags without escaping, so input containing `</input>` can break out, and tool results in the history sit outside the tags. | Medium | Treat the policy as the control; keep untrusted content out of tools' trusted outputs |
+| L1 | **Budgets still trust the agent's cost.** `Action.cost` is set by the agent. Negative, `NaN`, `inf`, bool, and non-numeric costs are now denied, but a custom `Agent` can still declare `0` (or an understated value) for every action and never consume budget. `LLMAgent` takes costs from its tool table and is not affected. | Medium (partly fixed) | Define costs in trusted code; do not rely on budgets with untrusted agent code. A policy-owned cost table is on the roadmap |
+| L2 | **Prompt delimiters are a hint, not a boundary.** `LLMAgent` now escapes `&`, `<`, and `>` in untrusted input and in the history, so input cannot close or forge the `<input>` tag. The model can still be persuaded by the *content* of the input, and tool results are not otherwise marked as untrusted. | Low (partly fixed) | Treat the policy as the control; keep untrusted content out of tools' trusted outputs |
 | L3 | **Rollback is partial.** The rate-limit window is not restored, and external side effects cannot be undone. | Medium | See [section 10](#10-checkpoint-and-rollback-semantics) |
 | L4 | **Checkpoints do not survive a restart, and agent ids are random per spawn.** A SQLite memory file cannot be re-attached to "the same" agent in a new process. | Medium | Treat persistence as a log for inspection, not recovery |
 | L5 | **Only routed actions are governed.** An agent's own `act()` code can perform side effects that no policy can see. | Medium (by design) | Keep all side effects behind approved actions |
@@ -902,15 +904,17 @@ Agent-provided explanations are evidence, not proof. Rollback cannot reverse irr
 
 ## 16. Roadmap
 
-A milestone is complete when its acceptance criteria are met, not when a folder, class, or diagram exists. The longer plan, including the validation approach and research pillars, is in [docs/product-and-roadmap.md](docs/product-and-roadmap.md).
+A milestone is complete when its acceptance criteria are met, not when a folder, class, or diagram exists. The validation approach is Stage B below, and the research pillars are in the [research agenda](#17-research-agenda).
 
 ### Stage A: make the core runtime dependable *(in progress)*
 
 - [x] Repository, package structure, initial runtime prototype
 - [x] Agent and policy abstractions; lifecycle and episodic memory paths
 - [x] Decision tracing; constrained tool use with an LLM-driven agent
-- [ ] **Take action costs from the policy, not the agent** (L1)
-- [ ] **Escape or randomize the `<input>` delimiter; mark tool results as untrusted** (L2)
+- [x] Reject negative, non-finite, and non-numeric action costs (L1, first half)
+- [ ] **Take action costs from the policy, not the agent** (L1, remaining half)
+- [x] Escape angle brackets in untrusted input and history (L2, first half)
+- [ ] Mark tool results as untrusted; consider a randomized delimiter (L2, remaining half)
 - [ ] **Restore the rate-limit window on rollback** (L3)
 - [ ] **Persist checkpoints and give agents stable ids** (L4)
 - [ ] Hand the agent a copy of `params` after the check (L6); guard `explain`, memory, and trace failures (L7)
@@ -981,9 +985,7 @@ MUFFIN/
 ├── .github/workflows/ci.yml      tests on Python 3.10, 3.11, 3.12 + example smoke test
 ├── docs/
 │   ├── vision.md                 why cognitive infrastructure; why not "building AGI"
-│   ├── architecture.md           the 11-layer specification, lifecycle, safety, observability
-│   ├── design-notes.md           runtime, memory model, safety principles, observability notes
-│   └── product-and-roadmap.md    audience, MVP plan, technology direction, pillars, roadmap
+│   └── architecture.md           the 11-layer specification, lifecycle, safety, observability
 ├── src/muffin/
 │   ├── agent.py  runtime.py  safety.py  rules.py
 │   ├── memory.py  trace.py  llm_agent.py  providers.py
