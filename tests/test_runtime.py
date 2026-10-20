@@ -160,3 +160,36 @@ def test_memory_persists_to_disk(tmp_path):
     del rt
     from muffin import EpisodicMemory
     assert EpisodicMemory(db).count(aid) == 1
+    
+    import pytest
+from muffin import Action, Agent, Policy, Runtime
+
+
+class _CostAgent(Agent):
+    def __init__(self, cost):
+        self._cost = cost
+
+    def decide(self):
+        return Action("x", {}, cost=self._cost)
+
+    def act(self, action):
+        return "done"
+
+
+@pytest.mark.parametrize("bad_cost", [-1.0, -100, float("nan"), float("inf"), True, "1"])
+def test_invalid_cost_is_blocked(bad_cost):
+    rt = Runtime()
+    agent_id = rt.spawn(_CostAgent(bad_cost), Policy({"x"}, max_total_cost=1))
+    rt.start(agent_id)
+    entry = rt.step(agent_id)
+    assert entry["event"] == "blocked"
+    assert "invalid action cost" in entry["reason"]
+    assert rt.safety.snapshot(agent_id)["spent"] == 0.0
+
+
+def test_zero_and_normal_cost_still_allowed():
+    for cost in (0, 0.5, 1):
+        rt = Runtime()
+        agent_id = rt.spawn(_CostAgent(cost), Policy({"x"}, max_total_cost=1))
+        rt.start(agent_id)
+        assert rt.step(agent_id)["event"] == "acted"
