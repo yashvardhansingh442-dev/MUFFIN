@@ -1,6 +1,15 @@
 import pytest
 
-from muffin import Action, Agent, MuffinRuntimeError, Policy, Runtime, SafetyLayer, State
+from muffin import (
+    Action,
+    Agent,
+    EpisodicMemory,
+    MuffinRuntimeError,
+    Policy,
+    Runtime,
+    SafetyLayer,
+    State,
+)
 
 
 class Counter(Agent):
@@ -158,12 +167,10 @@ def test_memory_persists_to_disk(tmp_path):
     rt.start(aid)
     rt.step(aid)
     del rt
-    from muffin import EpisodicMemory
     assert EpisodicMemory(db).count(aid) == 1
-    
-    import pytest
-from muffin import Action, Agent, Policy, Runtime
 
+
+# ---- action cost validation (L1) ----------------------------------------
 
 class _CostAgent(Agent):
     def __init__(self, cost):
