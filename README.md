@@ -334,7 +334,7 @@ Everything below is exported from the top-level `muffin` package.
 
 ### 6.1 `Agent` and `Action`
 
-An `Action` is an immutable proposal: `Action(name, params={}, cost=1.0)`. It is **never executed directly**; the runtime submits it to the safety layer first. `cost` must be a finite number `>= 0`; anything else (negative, `NaN`, `inf`, a bool, a string) is denied before the action can run.
+An `Action` is an immutable proposal: `Action(name, params={}, cost=1.0)`. It is **never executed directly**; the runtime submits it to the safety layer first. `cost` is meant to be a finite number `>= 0`, but **v0.1 does not enforce this yet** (see [limitation L1](#15-known-limitations-v01)): negative, `NaN`, `inf`, bool and string costs currently reach the budget check unvalidated.
 
 To write an agent, subclass `Agent` and implement `decide` and `act`. Everything else has a default.
 
@@ -420,7 +420,7 @@ Checks run in this order and the first denial wins. Every denial is written to m
 | 1 | Kill switch tripped? | `kill switch tripped: <reason>` |
 | 2 | Policy registered for this agent? | `no policy registered` |
 | 3 | Action in `allowed_actions`? | `action '<name>' not in allowed set (default deny)` |
-| 4 | Action cost valid (finite number, `>= 0`, not a bool)? | `invalid action cost <value>: must be a finite number >= 0` |
+| 4 | *(planned, not yet enforced; L1)* Action cost valid (finite number, `>= 0`, not a bool)? | `invalid action cost <value>: must be a finite number >= 0` |
 | 5 | Parameter rules for this action | `parameter rule violated: <reason>` |
 | 6 | Lifetime budget | `total action budget exceeded` |
 | 7 | Rate limit | `rate limit exceeded` |
@@ -430,18 +430,19 @@ If any check **raises an exception**, the verdict is a denial (`safety error, fa
 
 ### 7.2 Threat model
 
+A fuller, row-by-row threat register (15 threats, with status and evidence for each) is in [docs/threat-model.md](docs/threat-model.md).
+
 **In scope today (what the layer is meant to contain):**
 
 - A model, hijacked or merely mistaken, proposing an action the policy never allowed (hallucinated tool names included).
 - A model proposing an allowed action with out-of-policy arguments (wrong recipient domain, extra parameters, oversized body).
 - Runaway loops: bounded by the lifetime budget and the rate limit, subject to the cost caveat below.
-- An agent proposing a malformed cost (negative, `NaN`, `inf`, non-numeric) to evade the budget: denied before execution.
 - An operator needing to stop an agent immediately.
 
 **Out of scope today (what it does not protect against):**
 
 - Agent code that performs side effects directly instead of through approved actions. The policy only governs what is routed through the runtime.
-- Malicious agent code that **under-reports** its own `Action.cost` (for example always `0`). Malformed costs are rejected, but the number is still declared by the agent (see [limitations](#15-known-limitations-v01), L1).
+- Malicious or buggy agent code that **declares its own `Action.cost`**. A cost of `0` never spends budget, a negative cost refunds it, and `NaN` makes every later budget comparison false, which disables the budget check permanently (see [limitations](#15-known-limitations-v01), L1).
 - Credential theft, sandbox escape, supply-chain compromise, and network exfiltration. There is no sandbox or identity layer.
 - Detecting that a goal was hijacked. The runtime limits what a hijacked agent can *do*; it does not notice the hijack.
 
@@ -451,7 +452,7 @@ An honest self-assessment of v0.1 against the list in [section 1.2](#12-the-indu
 
 | Risk | Coverage | What exists | What is missing |
 |---|---|---|---|
-| ASI01 Goal Hijack | **Partial (containment)** | Allowlist and parameter rules cap what a hijacked agent can do; the offline demo shows a hijacked model blocked | No detection; `LLMAgent` escapes angle brackets in input and history, but delimiters remain a hint to the model, not a boundary; tool results are not otherwise marked untrusted |
+| ASI01 Goal Hijack | **Partial (containment)** | Allowlist and parameter rules cap what a hijacked agent can do; the offline demo shows a hijacked model blocked | No detection; `LLMAgent` defines an `_escape()` helper but does not yet apply it to input or history (L2), and delimiters remain a hint to the model, not a boundary even once it does; tool results are not otherwise marked untrusted |
 | ASI02 Tool Misuse | **Partial** | Allowlist, per-tool parameter rules, cost budget, rate limit | Rules must be hand-written per tool; no sandbox; no tool-metadata integrity checks |
 | ASI03 Identity & Privilege | **None** | Per-agent policy only | No agent identity, credential scoping, or attribution beyond a random id |
 | ASI04 Supply Chain | **None** | n/a | No agent bill of materials, provenance, or signing |
@@ -864,7 +865,7 @@ Injecting a clock into `SafetyLayer` makes rate-limit tests deterministic, which
 
 ## 14. Testing
 
-The suite has **52 tests** in three files and runs in well under a second. CI runs it on Python 3.10, 3.11, and 3.12, then runs `examples/hello_agent.py` as a smoke test.
+The suite has **52 tests** in three files and runs in well under a second. In the snapshot reviewed on 23 October 2026, 44 pass and 8 fail: the tests for cost validation (L1) and prompt escaping (L2) are written, but the fixes are not yet in `src/`. CI stays red until they land. CI runs it on Python 3.10, 3.11, and 3.12, then runs `examples/hello_agent.py` as a smoke test.
 
 | File | Covers |
 |---|---|
@@ -884,8 +885,8 @@ These are known gaps in the current code, listed so nobody relies on a guarantee
 
 | ID | Limitation | Severity | Workaround |
 |---|---|---|---|
-| L1 | **Budgets still trust the agent's cost.** `Action.cost` is set by the agent. Negative, `NaN`, `inf`, bool, and non-numeric costs are now denied, but a custom `Agent` can still declare `0` (or an understated value) for every action and never consume budget. `LLMAgent` takes costs from its tool table and is not affected. | Medium (partly fixed) | Define costs in trusted code; do not rely on budgets with untrusted agent code. A policy-owned cost table is on the roadmap |
-| L2 | **Prompt delimiters are a hint, not a boundary.** `LLMAgent` now escapes `&`, `<`, and `>` in untrusted input and in the history, so input cannot close or forge the `<input>` tag. The model can still be persuaded by the *content* of the input, and tool results are not otherwise marked as untrusted. | Low (partly fixed) | Treat the policy as the control; keep untrusted content out of tools' trusted outputs |
+| L1 | **Budgets trust the agent's cost, and costs are not validated.** `Action.cost` is set by the agent and `SafetyLayer` does not check it. A cost of `0` never spends budget, a negative cost refunds it, and `NaN` makes `spent + cost > max` always false, so the action runs and `spent` becomes `NaN`, disabling the budget for good. `LLMAgent` takes costs from its tool table, so it is less exposed. Tests for the invalid-cost cases exist and currently fail. | High | Define costs in trusted code; do not rely on budgets with untrusted agent code. A policy-owned cost table is on the roadmap |
+| L2 | **Prompt delimiters are a hint, not a boundary, and escaping is not applied yet.** `_escape()` exists in `llm_agent.py` but `build_prompt` inserts the perception and history raw, so input can close or forge the `<input>` tag. Even once escaped, the model can still be persuaded by the *content* of the input, and tool results are not marked as untrusted. Tests for tag forging exist and currently fail. | Medium | Treat the policy as the control; keep untrusted content out of tools' trusted outputs |
 | L3 | **Rollback is partial.** The rate-limit window is not restored, and external side effects cannot be undone. | Medium | See [section 10](#10-checkpoint-and-rollback-semantics) |
 | L4 | **Checkpoints do not survive a restart, and agent ids are random per spawn.** A SQLite memory file cannot be re-attached to "the same" agent in a new process. | Medium | Treat persistence as a log for inspection, not recovery |
 | L5 | **Only routed actions are governed.** An agent's own `act()` code can perform side effects that no policy can see. | Medium (by design) | Keep all side effects behind approved actions |
@@ -897,6 +898,7 @@ These are known gaps in the current code, listed so nobody relies on a guarantee
 | L11 | **Small edge cases:** `memory.search` does not escape `LIKE` wildcards, `one_of` uses equality so `True` matches `1`, and the JSON extractor can miscount braces inside strings. | Low | n/a |
 | L12 | **Not designed or tested for concurrent use.** | Low | One runtime per thread or process |
 | L13 | **No formal guarantees and no hardened boundary.** | n/a | Do not connect to critical systems or physical actuators |
+| L14 | **No step or model-call limit.** Blocked actions and `no_action` steps cost nothing, and nothing caps steps, model calls, or tool run time. A looping or injected agent can spend model tokens without touching the action budget. | Medium | Cap steps in your own loop; set provider and tool timeouts |
 
 Agent-provided explanations are evidence, not proof. Rollback cannot reverse irreversible external effects. Memory persistence does not create learning.
 
@@ -911,14 +913,16 @@ A milestone is complete when its acceptance criteria are met, not when a folder,
 - [x] Repository, package structure, initial runtime prototype
 - [x] Agent and policy abstractions; lifecycle and episodic memory paths
 - [x] Decision tracing; constrained tool use with an LLM-driven agent
-- [x] Reject negative, non-finite, and non-numeric action costs (L1, first half)
+- [ ] **Reject negative, non-finite, and non-numeric action costs** (L1, first half; tests already written)
 - [ ] **Take action costs from the policy, not the agent** (L1, remaining half)
-- [x] Escape angle brackets in untrusted input and history (L2, first half)
+- [ ] **Apply `_escape()` to untrusted input and history** in `LLMAgent.build_prompt` (L2, first half; tests already written)
 - [ ] Mark tool results as untrusted; consider a randomized delimiter (L2, remaining half)
 - [ ] **Restore the rate-limit window on rollback** (L3)
 - [ ] **Persist checkpoints and give agents stable ids** (L4)
 - [ ] Hand the agent a copy of `params` after the check (L6); guard `explain`, memory, and trace failures (L7)
 - [ ] Read `MUFFIN_DB_PATH` and `MUFFIN_TRACE_PATH` (L9)
+- [ ] Add a step limit, a model-call budget, and timeouts (L14)
+- [ ] Turn each row of [docs/threat-model.md](docs/threat-model.md) into an adversarial test that runs in CI
 - [ ] Document state transitions and rollback semantics precisely; expand adversarial tests
 - [ ] Add `ruff` and `mypy` to CI; examples reproducible from a clean checkout
 
@@ -985,7 +989,8 @@ MUFFIN/
 ├── .github/workflows/ci.yml      tests on Python 3.10, 3.11, 3.12 + example smoke test
 ├── docs/
 │   ├── vision.md                 why cognitive infrastructure; why not "building AGI"
-│   └── architecture.md           the 11-layer specification, lifecycle, safety, observability
+│   ├── architecture.md           the 11-layer specification, lifecycle, safety, observability
+│   └── threat-model.md           threat register for v0.1: assets, attackers, boundaries, status per threat
 ├── src/muffin/
 │   ├── agent.py  runtime.py  safety.py  rules.py
 │   ├── memory.py  trace.py  llm_agent.py  providers.py
