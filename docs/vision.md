@@ -4,6 +4,8 @@
 
 This document explains *what* MUFFIN.AI is, *why* it needs to exist, and *how* we think about building it. It is the founding reference for every architectural and product decision in this repository.
 
+> **Status:** this is a vision document. It describes goals and hypotheses, not shipped functionality. v0.1 implements only an agent lifecycle, episodic memory, a default-deny safety layer, decision traces and an LLM-driven agent. See the [README](../README.md) for what exists today and its [known limitations](../README.md#15-known-limitations-v01).
+
 ---
 
 ## Table of Contents
@@ -32,7 +34,7 @@ This document explains *what* MUFFIN.AI is, *why* it needs to exist, and *how* w
 
 ## 1. The One-Paragraph Vision
 
-Smart machines will exist, and in the near future there will be many of them: language agents, robots, autonomous systems, and swarms of cooperating software minds. Raw intelligence is becoming abundant. What remains scarce is the layer that makes intelligence **remembered, governed, observable, and stable over time**. MUFFIN.AI builds that layer: the memory, decision, safety, and observability infrastructure that sits *around* intelligent systems, much as cloud infrastructure sits around software. **AWS + Kubernetes + Datadog + Stripe, for artificial minds.**
+Smart machines will exist, and in the near future there will be many of them: language agents, robots, autonomous systems, and swarms of cooperating software minds. Raw intelligence is becoming abundant. What remains scarce is the layer that makes intelligence **remembered, governed, observable, and stable over time**. MUFFIN.AI builds that layer: the memory, decision, safety, and observability infrastructure that sits *around* intelligent systems, much as cloud infrastructure sits around software. **AWS + Kubernetes + Datadog + Stripe, for artificial minds.** (An analogy for direction, not a claim of equivalent scale or functionality.)
 
 ---
 
@@ -54,6 +56,8 @@ If a human learns by experience, an AI "learns" by seeing huge numbers of exampl
 ## 3. Where the Money Goes: The Industry Today
 
 Following the money shows where the industry believes the hard problems are.
+
+*The figures in this section are approximate and unsourced here, and they change quickly. Add dated sources before relying on them.*
 
 ### 3.1 Big Tech: infrastructure, not just models
 The largest AI-driven companies spend most of their AI budgets on the **physical and computational backbone**: data centers, GPUs, networking, power, and cooling. Capital expenditure at the biggest cloud providers runs to the hundreds of billions per year, and much of it goes to servers and hardware rather than model research.
@@ -97,7 +101,7 @@ Now replace "websites" with "intelligent machines." Future AI systems will need:
 | **Limits** | To avoid dangerous behavior |
 | **Monitoring** | So humans can see what's happening |
 
-Nobody has built this layer as a unified, standard, trustworthy product. **We are building it.**
+Pieces of this layer already exist (policy-enforcement toolkits, memory libraries, tracing standards; see the README's landscape section), but as far as we know no integrated, widely adopted, trustworthy version exists yet. **We are building a small, honest version of it.**
 
 ---
 
@@ -122,7 +126,7 @@ So the real problem is not intelligence. **The real problem is management over t
 
 > **AGI won't fail because it's stupid. It will fail because it's unmanaged.**
 
-AGI will not be magically created by one breakthrough. It will *emerge* when systems are built correctly. Our job is to build the systems that make that possible, slowly, safely, and deliberately.
+Our working hypothesis is that capable general systems, if they arrive, will arrive as well-managed systems rather than from one breakthrough. Nobody knows. MUFFIN does not try to build AGI. Our job is to build the infrastructure that keeps whatever intelligence exists usable, slowly, safely, and deliberately.
 
 ---
 
@@ -267,7 +271,7 @@ The same logic applies to intelligent machines.
 1. **If you can't observe it, you can't trust it.**
 2. **If you can't stop it, it's already unsafe.**
 3. **Every action has a budget.** Capability is bounded by default.
-4. **Every decision is explainable.** If we can't say why an agent did something at a specific moment, we haven't finished building it.
+4. **Every decision is traceable.** If we can't say what an agent did, on what input, under which policy, at a specific moment, we haven't finished building it. An agent's own stated reason is evidence, not proof.
 5. **Failure is designed for, not hoped against.** Failure modes are enumerated, simulated, and handled before deployment.
 
 ---
@@ -308,7 +312,9 @@ The runtime handles everything else.
 ### 12.1 Agent lifecycle
 `spawn → configure → run → pause → resume → checkpoint → rollback → kill`
 
-Every transition preserves state. Any agent can be paused mid-thought and resumed exactly, rolled back to a known-good checkpoint, or terminated safely.
+The design goal is that every transition preserves state. In v0.1, pause, resume, checkpoint, rollback and kill exist, but checkpoints live in process memory and rollback cannot undo external side effects (see README sections 10 and 15).
+
+*Sections 12.2 to 12.5 describe planned services and interfaces. They are not built yet.*
 
 ### 12.2 Resource management
 - Memory allocation across memory types
@@ -340,7 +346,7 @@ Every transition preserves state. Any agent can be paused mid-thought and resume
 
 ### 12.6 The layered stack
 
-The runtime sits at Layer 2 of an 11-layer architecture (physical substrate to external interface). See the [Architecture section of the README](../README.md#-architecture-the-11-layer-stack). Each layer is independently testable, has defined interfaces up and down, and knows nothing about the implementation of non-adjacent layers.
+The runtime sits at Layer 2 of an 11-layer architecture (physical substrate to external interface). See the [Architecture section of the README](../README.md#5-architecture). Each layer is independently testable, has defined interfaces up and down, and knows nothing about the implementation of non-adjacent layers.
 
 ---
 
@@ -349,7 +355,7 @@ The runtime sits at Layer 2 of an 11-layer architecture (physical substrate to e
 | Segment | Their problem | What MUFFIN gives them |
 |---|---|---|
 | **Agent developers** | Rebuilding memory, logging, and safety for every agent | An SDK where agents just plug in |
-| **Robotics teams** | Agents that must stay safe and stable around people and hardware | Control, kill switches, simulation-tested behavior |
+| **Robotics teams** | Agents that must stay safe and stable around people and hardware | Control and kill switches (later stage; v0.1 must not be connected to physical actuators or critical systems) |
 | **Enterprises deploying agents** | No audit trail, no control, no accountability | Observability, overrides, human-in-the-loop, audit logs |
 | **Researchers** | Hard to run reproducible long-horizon agent experiments | Experiment tracking, checkpoints, replay |
 | **Regulators and auditors (eventually)** | No standard way to verify agent behavior | Transparent, inspectable cognition logs |
@@ -394,7 +400,7 @@ Infrastructure wins by becoming hard to replace. Our hypotheses (to be tested, n
 - Many intelligent systems
 - All interacting
 
-Cognitive infrastructure ensures:
+Cognitive infrastructure aims to provide:
 
 - **Control**
 - **Visibility**
