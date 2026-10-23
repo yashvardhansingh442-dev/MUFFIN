@@ -190,7 +190,7 @@ def test_invalid_cost_is_blocked(bad_cost):
     rt.start(agent_id)
     entry = rt.step(agent_id)
     assert entry["event"] == "blocked"
-    assert "invalid action cost" in entry["reason"]
+    assert "finite, non-negative" in entry["reason"]
     assert rt.safety.snapshot(agent_id)["spent"] == 0.0
 
 
