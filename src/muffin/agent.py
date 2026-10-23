@@ -17,12 +17,15 @@ class Action:
 
     Attributes:
         name: which action is requested. It must be on the policy's allowed list.
-        params: the arguments, as plain JSON-style data. The safety layer reads
-            them and the trace records them. Treat them as read-only: `frozen=True`
-            protects the fields, not the contents of this dict (README limitation L6).
+        params: the arguments, as plain JSON-style data that can be deep-copied. The
+            safety layer reads them and the trace records them. The runtime
+            snapshots them right after `decide()`, checks and records the snapshot,
+            and hands `act()` its own copy, so changing them later cannot alter
+            what was approved (README limitation L6).
         cost: a finite number >= 0 that is counted against the agent's budget.
-            The agent declares it and the safety layer is meant to validate it
-            (README limitation L1). Take costs from trusted code, such as a tool table.
+            The safety layer rejects invalid values, but the agent still declares its
+            own cost and can under-report it (README limitation L1). Take costs from
+            trusted code, such as a tool table.
     """
 
     name: str
