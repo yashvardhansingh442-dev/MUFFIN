@@ -1,5 +1,6 @@
-
 import json
+
+from pathlib import Path
 
 import pytest
 
@@ -30,11 +31,21 @@ def test_records_are_written_as_jsonl(tmp_path):
     assert json.loads(lines[1])["event"] == "result"
 
 
-def test_reserved_fields_cannot_be_overridden():
+@pytest.mark.parametrize("field", ["decision_id", "ts"])
+def test_reserved_fields_cannot_be_overridden(field):
     log = TraceLog()
 
     with pytest.raises(ValueError):
-        log.record("agent-1", "action", agent_id="agent-2")
+        log.record("agent-1", "action", **{field: "x"})
+
+
+@pytest.mark.parametrize("field", ["agent_id", "event"])
+def test_positional_fields_cannot_be_passed_as_extra_fields(field):
+    log = TraceLog()
+
+    # Python itself rejects the duplicate before the reserved-field check runs.
+    with pytest.raises(TypeError):
+        log.record("agent-1", "action", **{field: "x"})
 
 
 def test_returned_record_cannot_mutate_internal_record():
@@ -66,7 +77,7 @@ def test_failed_write_does_not_add_memory_entry(tmp_path, monkeypatch):
     def fail_open(*args, **kwargs):
         raise OSError("disk unavailable")
 
-    monkeypatch.setattr(path, "open", fail_open)
+    monkeypatch.setattr(Path, "open", fail_open)
 
     with pytest.raises(OSError):
         log.record("agent-1", "action")
