@@ -242,7 +242,7 @@ The runtime hosts a standard cognitive loop. **The agent developer implements on
 | **Resume** | Continues from the exact suspension point |
 | **Checkpoint** | Persists full recoverable state (beliefs, memory pointers, goals, loop position) |
 | **Rollback** | Restores a previous checkpoint |
-| **Kill** | Terminates with state preserved for post-mortem |
+| **Kill** | Terminates with state preserved for post-mortem. Trips the kill switch at once (no further action is approved); an action already running finishes and is recorded (README L15) |
 
 > **v0.1 differs from this design.** The implemented states are `configured`, `running`, `paused`, `failed` and `terminated`. `spawn` already configures the agent (there is no separate `CREATED` state), the operation is `start`, and checkpoint is an operation, not a state. `rollback` leaves the agent `paused`, and it can also be applied from `failed`. Checkpoints live in process memory and are lost on restart, agents are not isolated from each other, and rollback does not restore the rate-limit window or undo external side effects (README sections 5.2, 10 and 15).
 
