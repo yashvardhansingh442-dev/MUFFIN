@@ -1,7 +1,6 @@
 import pytest
 
 from muffin import Action, Agent, Policy, Runtime, rules
-from muffin.safety import SafetyLayer
 
 
 class Proposer(Agent):
@@ -114,4 +113,25 @@ def test_one_of():
     rule = rules.one_of("mode", ["read", "list"])
     assert rule({"mode": "read"}) is None
     assert rule({"mode": "write"}) is not None
+    assert rule({}) is not None
+
+
+def test_max_len():
+    rule = rules.max_len("body", 5)
+    assert rule({"body": "12345"}) is None            # exactly at the limit is allowed
+    assert rule({"body": "123456"}) is not None       # one over is blocked
+    assert rule({"body": 12345}) is not None          # not a string
+    assert rule({}) is not None                       # missing key
+
+
+def test_oversized_body_is_blocked_by_the_policy():
+    r, agent = run_one(EMAIL_POLICY, Action("send_email", {"to": "ops@example.com", "body": "x" * 201}))
+    assert r["event"] == "blocked" and "longer than 200" in r["reason"]
+    assert agent.ran == []
+
+
+def test_required():
+    rule = rules.required("to", "body")
+    assert rule({"to": "a", "body": "b"}) is None
+    assert rule({"to": "a"}) is not None
     assert rule({}) is not None
