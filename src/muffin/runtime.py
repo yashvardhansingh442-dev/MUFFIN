@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterator, Iterable
 
-from .agent import Agent
+from .agent import Action, Agent
 from .memory import EpisodicMemory
 from .safety import Policy, SafetyLayer
 from .trace import TraceLog
@@ -292,6 +292,10 @@ class Runtime:
                 perception = handle.agent.perceive(raw_input)
                 handle.agent.update_beliefs(perception)
                 action = handle.agent.decide()
+                # Snapshot before anything else of the agent's runs (explain() is
+                # agent code too): the checked, recorded and executed params are
+                # exactly what decide() proposed.
+                action = self._snapshot(action)
                 explanation = handle.agent.explain()
             except Exception:
                 return self._fail(
@@ -366,7 +370,9 @@ class Runtime:
                 )
 
             try:
-                outcome = handle.agent.act(action)
+                # act() gets its own copy, so changes it makes to params cannot
+                # alter what was approved or what the trace and memory record.
+                outcome = handle.agent.act(self._snapshot(action))
             except Exception:
                 # The tool may have performed an external side effect before
                 # raising, so do not claim the action definitely failed.
@@ -441,6 +447,18 @@ class Runtime:
         return results
 
     # ---- internals ---------------------------------------------------
+
+    @staticmethod
+    def _snapshot(action: Any) -> Any:
+        """Return a detached deep copy of an Action; leave anything else as it is.
+
+        Malformed non-Action values are passed through untouched so the safety layer
+        can deny them. Params that cannot be deep-copied raise, which fails the agent
+        before anything executes.
+        """
+        if not isinstance(action, Action):
+            return action
+        return Action(action.name, copy.deepcopy(action.params), action.cost)
 
     @contextmanager
     def _guard(self, agent_id: str, handle: _Handle) -> Iterator[None]:
