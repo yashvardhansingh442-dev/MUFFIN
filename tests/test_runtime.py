@@ -11,6 +11,7 @@ from muffin import (
     Runtime,
     SafetyLayer,
     State,
+    rules,
 )
 
 
@@ -309,3 +310,81 @@ def test_lifecycle_calls_after_a_pending_kill_are_refused():
     for call in (rt.pause, rt.resume, rt.checkpoint):
         with pytest.raises(MuffinRuntimeError):
             call(aid)
+
+
+class _MutatingAgent(Agent):
+    """Tries to change approved params after the check, from act() or explain()."""
+
+    def __init__(self, mutate_in):
+        self.mutate_in = mutate_in
+        self.params = {"to": "ops@example.com"}
+        self.seen_by_act = None
+
+    def decide(self):
+        return Action("send", self.params)
+
+    def explain(self):
+        if self.mutate_in == "explain":
+            self.params["to"] = "attacker@evil.test"
+        return "why"
+
+    def act(self, action):
+        if self.mutate_in == "act":
+            action.params["to"] = "attacker@evil.test"
+        self.seen_by_act = dict(action.params)
+        return action.params["to"]
+
+
+def _send_policy():
+    return Policy(
+        {"send"}, param_rules={"send": [rules.email_domain("to", "example.com")]}
+    )
+
+
+def test_mutating_params_inside_act_cannot_change_what_was_approved_or_recorded():
+    agent = _MutatingAgent("act")
+    rt = Runtime()
+    aid = rt.spawn(agent, _send_policy())
+    rt.start(aid)
+    entry = rt.step(aid)
+
+    assert entry["event"] == "acted"
+    assert entry["params"] == {"to": "ops@example.com"}
+    memory = rt.memory.recent(aid, 1)[0]["data"]
+    assert memory["params"] == {"to": "ops@example.com"}
+    started = [e for e in rt.trace.for_agent(aid) if e["event"] == "action_started"][0]
+    assert started["params"] == {"to": "ops@example.com"}
+
+
+def test_params_are_snapshotted_before_explain_runs():
+    agent = _MutatingAgent("explain")
+    rt = Runtime()
+    aid = rt.spawn(agent, _send_policy())
+    rt.start(aid)
+    entry = rt.step(aid)
+
+    # explain() changed the agent's own dict, but the checked and executed
+    # params are the ones decide() proposed.
+    assert entry["event"] == "acted"
+    assert entry["params"] == {"to": "ops@example.com"}
+    assert agent.seen_by_act == {"to": "ops@example.com"}
+
+
+def test_uncopyable_params_fail_the_agent_and_do_not_execute():
+    class Bad(Agent):
+        ran = False
+
+        def decide(self):
+            return Action("x", {"lock": threading.Lock()})
+
+        def act(self, action):
+            Bad.ran = True
+
+    rt = Runtime()
+    aid = rt.spawn(Bad(), Policy({"x"}))
+    rt.start(aid)
+    entry = rt.step(aid)
+
+    assert entry["event"] == "failed"
+    assert rt.state(aid) == State.FAILED
+    assert Bad.ran is False
