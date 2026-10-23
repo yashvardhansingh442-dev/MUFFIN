@@ -68,8 +68,14 @@ class Runtime:
                     state=State.CONFIGURED.value,
                 )
             except Exception:
-                # Do not leave a registered agent if initialization fails.
-                self._agents.pop(agent_id, None)
+                # SafetyLayer versions that support unregister can clean up
+                # their state. Never publish a runtime handle on failed spawn.
+                unregister = getattr(self.safety, "unregister", None)
+                if callable(unregister):
+                    try:
+                        unregister(agent_id)
+                    except Exception:
+                        pass
                 raise
 
             self._agents[agent_id] = handle
@@ -222,14 +228,24 @@ class Runtime:
 
             # This record describes rollback; it is not part of rolled-back
             # episodic memory and must remain in the trace history.
-            self.trace.record(
-                agent_id,
-                "rollback",
-                checkpoint_id=checkpoint_id,
-                memory_events_removed=removed,
-                step=handle.step,
-                state=handle.state.value,
-            )
+            # Rollback has already committed at this point. A trace failure
+            # must not report that restoration failed or attempt to undo it:
+            # memory truncation may be irreversible.
+            try:
+                self.trace.record(
+                    agent_id,
+                    "rollback",
+                    checkpoint_id=checkpoint_id,
+                    memory_events_removed=removed,
+                    step=handle.step,
+                    state=handle.state.value,
+                )
+            except Exception:
+                # The runtime state is restored, but this rollback event could
+                # not be persisted. Surface that fact to the caller.
+                raise MuffinRuntimeError(
+                    "rollback completed, but its trace record could not be persisted"
+                ) from None
 
     # ---- the agent loop ---------------------------------------------
 
@@ -280,6 +296,8 @@ class Runtime:
 
             try:
                 verdict = self.safety.check(agent_id, action)
+                if not hasattr(verdict, "allowed") or not hasattr(verdict, "reason"):
+                    raise TypeError("safety check returned an invalid verdict")
             except Exception:
                 return self._fail(
                     agent_id, handle, "safety check failed"
@@ -287,11 +305,13 @@ class Runtime:
 
             if not verdict.allowed:
                 try:
+                    action_name = getattr(action, "name", "<malformed>")
+                    action_params = getattr(action, "params", {})
                     self.memory.write(
                         agent_id,
                         "blocked",
                         {
-                            "action": action.name,
+                            "action": action_name,
                             "reason": verdict.reason,
                         },
                     )
@@ -299,8 +319,8 @@ class Runtime:
                         agent_id,
                         "blocked",
                         step=handle.step,
-                        action=action.name,
-                        params=action.params,
+                        action=action_name,
+                        params=action_params,
                         reason=verdict.reason,
                         explanation=explanation,
                     )
@@ -308,6 +328,17 @@ class Runtime:
                     return self._fail(
                         agent_id, handle, "failed to record blocked action"
                     )
+
+            # Re-check the kill switch immediately before execution. This
+            # narrows (but cannot eliminate) the race with a concurrent kill.
+            if self.safety.is_killed(agent_id):
+                handle.state = State.TERMINATED
+                return self.trace.record(
+                    agent_id,
+                    "killed",
+                    reason="kill switch active before action execution",
+                    step=handle.step,
+                )
 
             # Persist the intent before attempting the external operation.
             # If this fails, the action must not execute.
