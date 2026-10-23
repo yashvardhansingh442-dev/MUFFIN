@@ -16,7 +16,7 @@
 
 </div>
 
-> **Status: early-stage research prototype (v0.1).** The repository contains a small, tested Python runtime of roughly 600 lines. The larger platform described in the docs is a design goal, not shipped functionality. Every section below says clearly whether something is **implemented**, **partial**, or **planned**. Third-party facts in this README were researched in **October 2026** and are linked in [References](#21-references); this field moves fast, so verify before relying on them.
+> **Status: early-stage research prototype (v0.1).** The repository contains a small, tested Python runtime of roughly 1,700 lines. The larger platform described in the docs is a design goal, not shipped functionality. Every section below says clearly whether something is **implemented**, **partial**, or **planned**. Third-party facts in this README were researched in **October 2026** and are linked in [References](#21-references); this field moves fast, so verify before relying on them.
 
 ---
 
@@ -113,7 +113,7 @@ This is a product and research hypothesis to be tested with real developers, not
 
 ### 2.1 Model proposes, runtime disposes
 
-The agent (a hand-written policy or an LLM) only ever returns a proposed `Action`. The runtime sends it through the safety layer, executes it only if approved, and records what happened. The agent cannot disable or modify the safety layer because it never holds a reference to it.
+The agent (a hand-written policy or an LLM) only ever returns a proposed `Action`. The runtime sends it through the safety layer, executes it only if approved, and records what happened. Agent code is never handed the safety layer. That is a convention, not isolation: everything runs in one Python process (see L5 and L13).
 
 ### 2.2 The classical foundation: a reference monitor
 
@@ -188,7 +188,7 @@ This is the category MUFFIN is closest to, and it is moving quickly:
 **Where MUFFIN differs, honestly:** the Microsoft toolkit is far broader (multiple languages, many framework adapters, identity, sandboxing). MUFFIN's current niche is different:
 
 1. **One small integrated core.** Lifecycle, memory, safety, and trace share a single state machine, so rollback restores agent state, spent budget, and memory together.
-2. **Readable in an afternoon.** About 600 lines, no dependencies, so it works as a reference implementation and a research testbed.
+2. **Readable in an afternoon.** About 1,700 lines, no dependencies, so it works as a reference implementation and a research testbed.
 3. **Research questions first.** It is a place to test ideas (restricted modes after untrusted input, side-effect ledgers, standards-aligned hooks) against a codebase small enough to change.
 
 ### 4.3 Memory systems (remember)
@@ -234,13 +234,14 @@ perceive ─▶ update_beliefs ─▶ decide ───────────�
    │ exception in any of the three ─▶ state = FAILED        │ None ─▶ trace "no_action"
    │                                                        ▼
    │                                          SafetyLayer.check(agent_id, action)
-   │              kill switch → policy registered → allowlist → parameter rules
-   │                        → total budget → rate limit → custom constraints
+   │              kill switch → policy → action well-formed (incl. cost) → allowlist
+   │                  → total budget → rate limit → parameter rules → custom constraints
    │                                                        │
    │                                  ┌─────────────────────┴─────────────────────┐
    │                               blocked                                     allowed
-   │                    memory "blocked" + trace "blocked"                  agent.act(action)
+   │                    memory "blocked" + trace "blocked"       kill switch re-checked; trace "action_started"
    │                                                                              │
+   │                                                                      agent.act(action)
    │                                                       exception ─▶ FAILED    │ ok
    │                                                                              ▼
    │                                              safety.commit (spend cost, record time)
@@ -269,7 +270,7 @@ stateDiagram-v2
     running --> paused: pause
     paused --> running: resume
     running --> failed: exception in perceive / decide / act
-    failed --> paused: rollback
+    configured --> paused: rollback
     running --> paused: rollback
     configured --> terminated: kill
     running --> terminated: kill
@@ -280,15 +281,15 @@ stateDiagram-v2
 
 | Operation | Allowed from | Result |
 |---|---|---|
-| `spawn(agent, policy)` | n/a | New 8-hex-character agent id, state `configured` |
+| `spawn(agent, policy)` | n/a | New 32-hex-character agent id, state `configured` |
 | `start` | `configured` | `running` |
 | `pause` / `resume` | `running` / `paused` | `paused` / `running` |
 | `step` / `run` | `running` only | One loop iteration; `run` stops as soon as the agent leaves `running` |
-| `checkpoint` | any non-terminated state | Returns a checkpoint id |
-| `rollback(id, checkpoint)` | any non-terminated state | Restores state, ends `paused` |
-| `kill(id, reason)` | any state | Trips the kill switch, state `terminated`; memory and state are preserved for post-mortem |
+| `checkpoint` | `configured`, `running`, `paused` | Returns a checkpoint id |
+| `rollback(id, checkpoint)` | `configured`, `running`, `paused` | Restores state, ends `paused` |
+| `kill(id, reason)` | any state | Trips the kill switch, state `terminated`; memory and state are preserved for post-mortem. Waits for an in-progress `step` to finish (L15) |
 
-Invalid transitions raise `MuffinRuntimeError` rather than silently doing nothing. A `terminated` agent cannot be checkpointed, rolled back, or restarted.
+Invalid transitions raise `MuffinRuntimeError` rather than silently doing nothing. A `failed` or `terminated` agent cannot be checkpointed or rolled back, and a `terminated` agent cannot be restarted. A `failed` agent can only be killed.
 
 ### 5.3 Target architecture: an 11-layer stack
 
@@ -334,7 +335,7 @@ Everything below is exported from the top-level `muffin` package.
 
 ### 6.1 `Agent` and `Action`
 
-An `Action` is an immutable proposal: `Action(name, params={}, cost=1.0)`. It is **never executed directly**; the runtime submits it to the safety layer first. `cost` is meant to be a finite number `>= 0`, but **v0.1 does not enforce this yet** (see [limitation L1](#15-known-limitations-v01)): negative, `NaN`, `inf`, bool and string costs currently reach the budget check unvalidated.
+An `Action` is an immutable proposal: `Action(name, params={}, cost=1.0)`. It is **never executed directly**; the runtime submits it to the safety layer first. `cost` must be a finite number `>= 0`: the safety layer denies negative, `NaN`, `inf`, boolean and non-numeric costs. The agent still *declares* its own cost, so a custom agent can under-report it (see [limitation L1](#15-known-limitations-v01)).
 
 To write an agent, subclass `Agent` and implement `decide` and `act`. Everything else has a default.
 
@@ -390,12 +391,13 @@ Rules are small functions over an action's `params` dict. They fail closed: a mi
 | `rollback(agent_id, checkpoint_id)` | Restore the above; agent ends `paused` |
 | `step(agent_id, raw_input=None) -> dict` | One loop iteration; returns the trace entry |
 | `run(agent_id, inputs) -> list[dict]` | Step through inputs until exhausted or the agent stops running |
+| `close()` | Close the memory database; the runtime cannot be reused. Also works as a context manager (`with Runtime() as rt:`) |
 
 Public attributes: `runtime.memory` (an `EpisodicMemory`), `runtime.safety` (a `SafetyLayer`), `runtime.trace` (a `TraceLog`).
 
 ### 6.5 `EpisodicMemory`
 
-`write(agent_id, kind, data)`, `recent(agent_id, limit)`, `search(agent_id, text, limit)`, `count(agent_id)`, `last_id(agent_id)`, and `truncate_after(agent_id, marker_id)` (used by rollback). Events are JSON-serialized into SQLite with an autoincrement id and a timestamp.
+`write(agent_id, kind, data)`, `recent(agent_id, limit)`, `search(agent_id, text, limit)`, `count(agent_id)`, `last_id(agent_id)`, and `truncate_after(agent_id, marker_id)` (used by rollback), and `close()`. Events are JSON-serialized into SQLite with an autoincrement id and a timestamp.
 
 ### 6.6 `LLMAgent`, `Tool`, and providers
 
@@ -419,18 +421,18 @@ Checks run in this order and the first denial wins. Every denial is written to m
 |---|---|---|
 | 1 | Kill switch tripped? | `kill switch tripped: <reason>` |
 | 2 | Policy registered for this agent? | `no policy registered` |
-| 3 | Action in `allowed_actions`? | `action '<name>' not in allowed set (default deny)` |
-| 4 | *(planned, not yet enforced; L1)* Action cost valid (finite number, `>= 0`, not a bool)? | `invalid action cost <value>: must be a finite number >= 0` |
-| 5 | Parameter rules for this action | `parameter rule violated: <reason>` |
-| 6 | Lifetime budget | `total action budget exceeded` |
-| 7 | Rate limit | `rate limit exceeded` |
+| 3 | Action well-formed: non-empty string name, `params` is a dict, `cost` is a finite number `>= 0` and not a bool | `action name must be a non-empty string`, `action params must be a dictionary`, `action cost must be a finite, non-negative number` |
+| 4 | Action in `allowed_actions`? | `action '<n>' not in allowed set (default deny)` |
+| 5 | Lifetime budget | `total action budget exceeded` |
+| 6 | Rate limit | `rate limit exceeded` |
+| 7 | Parameter rules for this action | `parameter rule violated: <reason>` |
 | 8 | Custom constraints | `constraint violated: <reason>` |
 
 If any check **raises an exception**, the verdict is a denial (`safety error, failing closed`). Spending is recorded only after an approved action executes successfully (`commit`).
 
 ### 7.2 Threat model
 
-A fuller, row-by-row threat register (15 threats, with status and evidence for each) is in [docs/threat-model.md](docs/threat-model.md).
+A fuller, row-by-row threat register is planned as `docs/threat-model.md`; that file does not exist yet (see the [roadmap](#16-roadmap)).
 
 **In scope today (what the layer is meant to contain):**
 
@@ -442,7 +444,8 @@ A fuller, row-by-row threat register (15 threats, with status and evidence for e
 **Out of scope today (what it does not protect against):**
 
 - Agent code that performs side effects directly instead of through approved actions. The policy only governs what is routed through the runtime.
-- Malicious or buggy agent code that **declares its own `Action.cost`**. A cost of `0` never spends budget, a negative cost refunds it, and `NaN` makes every later budget comparison false, which disables the budget check permanently (see [limitations](#15-known-limitations-v01), L1).
+- Malicious or buggy agent code that **declares its own `Action.cost`**. Invalid costs (negative, `NaN`, `inf`, boolean, non-numeric) are denied, but a cost of `0` never spends budget, so an agent can under-report (see [limitations](#15-known-limitations-v01), L1).
+- An action that is already running. `kill()` waits for the in-progress `step`, including its `act()`, to finish (L15).
 - Credential theft, sandbox escape, supply-chain compromise, and network exfiltration. There is no sandbox or identity layer.
 - Detecting that a goal was hijacked. The runtime limits what a hijacked agent can *do*; it does not notice the hijack.
 
@@ -452,7 +455,7 @@ An honest self-assessment of v0.1 against the list in [section 1.2](#12-the-indu
 
 | Risk | Coverage | What exists | What is missing |
 |---|---|---|---|
-| ASI01 Goal Hijack | **Partial (containment)** | Allowlist and parameter rules cap what a hijacked agent can do; the offline demo shows a hijacked model blocked | No detection; `LLMAgent` defines an `_escape()` helper but does not yet apply it to input or history (L2), and delimiters remain a hint to the model, not a boundary even once it does; tool results are not otherwise marked untrusted |
+| ASI01 Goal Hijack | **Partial (containment)** | Allowlist and parameter rules cap what a hijacked agent can do; the offline demo shows a hijacked model blocked | No detection; `LLMAgent` escapes perception and history before placing them in `<input>` blocks, but delimiters remain a hint to the model, not a boundary (L2); tool results are escaped data in the history with no separate trust level |
 | ASI02 Tool Misuse | **Partial** | Allowlist, per-tool parameter rules, cost budget, rate limit | Rules must be hand-written per tool; no sandbox; no tool-metadata integrity checks |
 | ASI03 Identity & Privilege | **None** | Per-agent policy only | No agent identity, credential scoping, or attribution beyond a random id |
 | ASI04 Supply Chain | **None** | n/a | No agent bill of materials, provenance, or signing |
@@ -495,7 +498,7 @@ events(id INTEGER PRIMARY KEY AUTOINCREMENT,
 -- index on (agent_id, id)
 ```
 
-The runtime writes three kinds of event automatically: `action` (approved and executed, with params and outcome), `blocked` (with the denial reason), and `failure` (with the error). Pass a file path as `db_path` to persist across processes.
+The runtime writes three kinds of event automatically: `action` (approved and executed, with params and outcome), `blocked` (with the denial reason), and `failure` (with a fixed failure message). Pass a file path as `db_path` to persist across processes.
 
 Two behaviors are worth knowing:
 
@@ -530,25 +533,27 @@ Production systems differ mainly in *who manages memory*: Letta lets the agent e
 
 Every lifecycle event and every step appends one entry to `runtime.trace` (and, if `trace_path` is set, one JSON line to that file). The trace is **never truncated**, including on rollback.
 
-Common fields on every entry: `decision_id` (12 hex chars), `agent_id`, `ts` (Unix time), `event`.
+Common fields on every entry: `decision_id` (32 hex chars), `agent_id`, `ts` (Unix time), `event`.
 
 | Event | Extra fields |
 |---|---|
 | `spawned`, `started`, `paused`, `resumed` | `state` |
-| `acted` | `step`, `perception`, `action`, `params`, `verdict`, `outcome`, `explanation` |
+| `action_started` | `step`, `action`, `params`, `explanation` (written before `act()` runs; if it cannot be written, the action does not run) |
+| `acted` | `step`, `action`, `params`, `verdict`, `outcome`, `explanation` |
 | `blocked` | `step`, `action`, `params`, `reason`, `explanation` |
 | `no_action` | `step`, `perception`, `explanation` |
-| `failed` | `step`, `message`, `error` |
+| `outcome_unknown` | `step`, `action` (`act()` raised; its external effect is unknown) |
+| `outcome_recording_failed` | `step`, `action` (`act()` returned, but accounting or persistence failed) |
+| `failed` | `step`, `message` (a fixed message, never the raw exception text) |
 | `checkpoint` | `checkpoint_id`, `step` |
-| `rollback` | `checkpoint_id`, `memory_events_removed` |
-| `killed` | `reason` |
+| `rollback` | `checkpoint_id`, `memory_events_removed`, `step`, `state` |
+| `killed` | `reason`, `step` |
 
 A real entry:
 
 ```json
-{"decision_id": "b7dbb6d606fe", "agent_id": "9c39b898", "ts": 1792403467.05, "event": "acted",
- "step": 1, "perception": 0, "action": "increment", "params": {"by": 1},
- "verdict": "ok", "outcome": 1, "explanation": "keep counting"}
+{"decision_id": "771cc1ea2c6f4acfad44a3a404ddaaf5", "agent_id": "f256906652594ed89bda9d6806665f11", "ts": 1792750539.12961, "event": "acted",
+ "step": 1, "action": "increment", "params": {"by": 1}, "verdict": "ok", "outcome": 1, "explanation": "keep counting"}
 ```
 
 The `explanation` is whatever the agent says about itself. It is **evidence for debugging, not proof** that the stated reason is the real one.
@@ -578,7 +583,7 @@ Making these hooks *declarative and external* (so a separate guardian can allow,
 
 ### 9.3 Privacy
 
-Prompts, inputs, tool outputs, and retrieved documents can contain credentials or personal data. Today the trace records `perception`, `params`, and `outcome` verbatim, which is convenient for debugging and wrong for production. Planned: opt-in content capture, redaction hooks, and references to payloads instead of copies.
+Prompts, inputs, tool outputs, and retrieved documents can contain credentials or personal data. Today the trace records `perception`, `params`, and `outcome` verbatim, which is convenient for debugging and wrong for production. Failure entries are the exception: they record a fixed message, not the exception text. Planned: opt-in content capture, redaction hooks, and references to payloads instead of copies.
 
 ---
 
@@ -595,6 +600,7 @@ A checkpoint is a snapshot of **internal** runtime state. Rolling back restores 
 | Agent lifecycle state | Set to `paused` | Resume explicitly with `resume` |
 | Rate-limit window | **No** | Known limitation |
 | Kill switch | **No** | A killed agent is terminated and cannot be rolled back |
+| Agent in `failed` state | **Not allowed** | Rollback is refused; kill the agent instead |
 | Trace log | **No, by design** | Rollbacks stay auditable; a `rollback` entry is added |
 | External side effects | **No, cannot be** | An email already sent stays sent |
 | The checkpoints themselves | **Not persisted** | They live in process memory |
@@ -612,21 +618,19 @@ Workflow engines that resume from checkpoints (LangGraph's persistence layer is 
 
 ### 10.3 A worked example
 
-Running the checkpoint example from the [usage guide](#12-usage-guide) prints:
+Running the checkpoint example from [section 12.3](#123-checkpoint-rollback-and-the-kill-switch) prints:
 
 ```text
-before rollback: n = 5 | memory events = 5 | spent = {'spent': 5.0}
-after rollback : n = 2 | memory events = 2 | spent = {'spent': 2.0} | state = paused
-final state: terminated
-MuffinRuntimeError -> agent is terminated, not running
+before: 5 5
+after:  2 2 paused
 ```
 
-and the trace for that agent reads `spawned, started, acted, acted, checkpoint, acted, acted, acted, rollback, resumed, acted, killed`: the rolled-back steps remain visible even though memory and state were rewound.
+and the trace for that agent reads `spawned, started, action_started, acted, action_started, acted, checkpoint, action_started, acted, action_started, acted, action_started, acted, rollback, resumed, killed`. The rolled-back steps remain visible even though memory and state were rewound, and the `rollback` entry reports `memory_events_removed: 3`.
 
 ---
 ## 11. Quick start
 
-Requires **Python 3.10+** (CI runs 3.10, 3.11, and 3.12). The core package has no runtime dependencies.
+Requires **Python 3.10+** as declared in `pyproject.toml`. CI currently runs 3.11 through 3.15; 3.10 is declared but not in the CI matrix yet. The core package has no runtime dependencies.
 
 ```bash
 git clone https://github.com/yashvardhansingh442-dev/MUFFIN.git
@@ -661,7 +665,7 @@ The offline LLM demo proves the **policy contains a misbehaving model**. It does
 
 ## 12. Usage guide
 
-Every snippet below was run against this repository.
+The runnable snippets in 12.1 to 12.5 were run against this repository and their output is shown. The signatures in 6.2 and 6.6 are reference only.
 
 ### 12.1 A minimal agent
 
@@ -865,17 +869,22 @@ Injecting a clock into `SafetyLayer` makes rate-limit tests deterministic, which
 
 ## 14. Testing
 
-The suite has **52 tests** in three files and runs in well under a second. In the snapshot reviewed on 23 October 2026, 44 pass and 8 fail: the tests for cost validation (L1) and prompt escaping (L2) are written, but the fixes are not yet in `src/`. CI stays red until they land. CI runs it on Python 3.10, 3.11, and 3.12, then runs `examples/hello_agent.py` as a smoke test.
+The suite has **92 tests** in six files and runs in well under a second. CI runs it on Python 3.11 through 3.15, then runs `examples/hello_agent.py` as a smoke test.
 
-| File | Covers |
-|---|---|
-| `tests/test_runtime.py` | Allowed actions execute and are remembered; default deny; total budget; rate limit including window expiry; constraint veto; fail-closed on a crashing constraint; pause and resume; kill preserves memory; checkpoint and rollback restore state, memory, and budget; rollback is audited; an agent exception fails the agent without crashing the runtime; invalid transitions rejected; `run` stops when the agent leaves `running`; memory persists to disk; hostile costs (negative, `NaN`, `inf`, bool, string) are blocked and never spent; zero and normal costs still run |
-| `tests/test_param_rules.py` | Good and bad parameters; `email_domain` against smuggling tricks (second address, newline injection, look-alike and sub-domains, empty, `None`, non-string); unexpected and missing params fail closed; rules apply only to their own action; a crashing rule fails closed; `number_between`; `matches` uses `fullmatch`; `one_of` |
-| `tests/test_llm_agent.py` | Approved tool call runs with explanation traced; real-but-unlisted tool blocked; hallucinated tool blocked, not crashed; prompt injection cannot exceed the policy; malformed output is a safe no-action; model outage does not kill the agent; JSON in code fences and chatter; tool errors reported, not fatal; budget governs the model; history reaches the next prompt and rollback restores it; JSON-extraction edge cases; untrusted input and tool results cannot close or forge the `<input>` tag |
+**Current status.** In the snapshot reviewed on 23 October 2026, 79 tests pass and 13 fail, so CI is red. The failures are mismatches between tests and code, not missing fixes: six cost tests and two `LLMAgent` tests assert message wording the code no longer uses, three prompt tests assume the old unescaped, single-`<input>` prompt, and two trace tests are themselves broken (one passes `agent_id=` as a field, which Python rejects before the reserved-field check runs; the other tries to patch a read-only `PosixPath` method).
+
+| File | Tests | Covers |
+|---|---|---|
+| `tests/test_runtime.py` | 21 | Allowed actions execute and are remembered; default deny; total budget; rate limit including window expiry; constraint veto; fail-closed on a crashing constraint; pause and resume; kill preserves memory; checkpoint and rollback restore state, memory, and budget; rollback is audited; an agent exception fails the agent without crashing the runtime; invalid transitions rejected; `run` stops when the agent leaves `running`; memory persists to disk; hostile costs (negative, `NaN`, `inf`, bool, string) are blocked and never spent; zero and normal costs still run |
+| `tests/test_param_rules.py` | 21 | Good and bad parameters; `email_domain` against smuggling tricks (second address, newline injection, look-alike and sub-domains, empty, `None`, non-string); unexpected and missing params fail closed; rules apply only to their own action; a crashing rule fails closed; `number_between`; `matches` uses `fullmatch`; `one_of` |
+| `tests/test_llm_agent.py` | 13 | Approved tool call runs with explanation traced; real-but-unlisted tool blocked; hallucinated tool blocked, not crashed; prompt injection cannot exceed the policy; malformed output is a safe no-action; model outage does not kill the agent; JSON in code fences and chatter; tool errors reported, not fatal; budget governs the model; history reaches the next prompt and rollback restores it; JSON-extraction edge cases; untrusted input and tool results cannot close or forge the `<input>` tag |
+| `tests/test_safety.py` | 19 | Invalid cost denied; unknown agent and unapproved action denied; budget cannot be exceeded; invalid policy budgets rejected; infinite budget allowed; kill switch denies actions; restore rejects invalid spend; rate limit |
+| `tests/test_memory.py` | 10 | Write and recent preserve order; agents have separate memories; `search` treats `%` and `_` literally; rollback deletes only the target agent's later events; invalid values and inputs rejected; unknown objects do not leak their repr; close prevents further use; file databases persist |
+| `tests/test_trace.py` | 8 | Unique ids; JSONL output; reserved fields; returned records are detached; invalid JSON numbers rejected; a failed write adds no entry; unknown objects do not use repr; invalid agent ids and events rejected |
 
 The project's rule is that a safety mechanism needs a test that proves it **blocks** something, because an untested safety mechanism is assumed broken.
 
-**Gaps worth closing** (also tracked in the [roadmap](#16-roadmap)): agents that under-report cost as zero (L1); rollback with an active rate limit; failure injection around `act`, memory, and trace writes; concurrent use; and tests against the live provider behind an opt-in flag.
+**Gaps worth closing** (also tracked in the [roadmap](#16-roadmap)): `kill()` while an action is running (L15); agents that under-report cost as zero (L1); mutating `params` inside `act` (L6); rollback with an active rate limit; failure injection around `act`, memory, and trace writes; concurrent use; and tests against the live provider behind an opt-in flag.
 
 ---
 
@@ -885,20 +894,21 @@ These are known gaps in the current code, listed so nobody relies on a guarantee
 
 | ID | Limitation | Severity | Workaround |
 |---|---|---|---|
-| L1 | **Budgets trust the agent's cost, and costs are not validated.** `Action.cost` is set by the agent and `SafetyLayer` does not check it. A cost of `0` never spends budget, a negative cost refunds it, and `NaN` makes `spent + cost > max` always false, so the action runs and `spent` becomes `NaN`, disabling the budget for good. `LLMAgent` takes costs from its tool table, so it is less exposed. Tests for the invalid-cost cases exist and currently fail. | High | Define costs in trusted code; do not rely on budgets with untrusted agent code. A policy-owned cost table is on the roadmap |
-| L2 | **Prompt delimiters are a hint, not a boundary, and escaping is not applied yet.** `_escape()` exists in `llm_agent.py` but `build_prompt` inserts the perception and history raw, so input can close or forge the `<input>` tag. Even once escaped, the model can still be persuaded by the *content* of the input, and tool results are not marked as untrusted. Tests for tag forging exist and currently fail. | Medium | Treat the policy as the control; keep untrusted content out of tools' trusted outputs |
+| L1 | **Budgets trust the agent's declared cost.** The safety layer rejects negative, `NaN`, infinite, boolean and non-numeric costs, but `Action.cost` is still set by the agent. A cost of `0` never spends budget, so a custom `Agent` can under-report freely (verified: 500 zero-cost actions ran against a budget of 1). `LLMAgent` takes costs from its tool table, so it is less exposed. | Medium | Define costs in trusted code; do not rely on budgets with untrusted agent code. A policy-owned cost table is on the roadmap |
+| L2 | **Prompt delimiters are a hint, not a boundary.** `LLMAgent.build_prompt` escapes `&`, `<` and `>` in the perception and history, so input cannot close or forge the `<input>` tag. The model can still be persuaded by the *content* of the input, and tool results are escaped data in the history rather than a separate trust level. | Medium | Treat the policy as the control; keep untrusted content out of tools' trusted outputs |
 | L3 | **Rollback is partial.** The rate-limit window is not restored, and external side effects cannot be undone. | Medium | See [section 10](#10-checkpoint-and-rollback-semantics) |
 | L4 | **Checkpoints do not survive a restart, and agent ids are random per spawn.** A SQLite memory file cannot be re-attached to "the same" agent in a new process. | Medium | Treat persistence as a log for inspection, not recovery |
 | L5 | **Only routed actions are governed.** An agent's own `act()` code can perform side effects that no policy can see. | Medium (by design) | Keep all side effects behind approved actions |
-| L6 | **Shared mutable params.** The same `params` dict is checked, then handed to `act()`. | Low-Medium | Do not mutate `action.params` inside `act` |
-| L7 | **Unguarded failures after approval.** `step()` wraps `perceive`, `decide`, and `act`, but an exception from `explain()`, memory, or trace writes propagates and can leave an executed action unrecorded. | Low-Medium | Use reliable storage paths |
+| L6 | **Shared mutable params.** The same `params` dict is checked, then handed to `act()`. `Action` is `frozen`, but that protects the fields, not the dict, so code in `act()` can change the values that were approved, and the changed values are what the trace records (verified: an `email_domain`-checked recipient was swapped inside `act()`). | Medium | Do not mutate `action.params` inside `act`. Planned: hand `act()` a copy |
+| L7 | **Failures after approval are handled, with limits.** An exception from `explain()`, memory or trace writes now fails the agent (state `failed`), and `outcome_unknown` or `outcome_recording_failed` is written to the trace when possible. If the trace backend itself is down, the failure may go unrecorded. | Low | Use reliable storage paths |
 | L8 | **The trace records content verbatim**, including perceptions, params, and outcomes. | Low-Medium | Do not feed secrets through agents in this version |
 | L9 | **`MUFFIN_*` variables in `.env.example` are not read.** | Low | Pass paths in code |
 | L10 | **Provider is thin.** `AnthropicCompleter` has no timeout or retry, a 500-token default that can truncate JSON replies, and no live-API tests. | Low | Raise `max_tokens`; wrap with your own retry |
-| L11 | **Small edge cases:** `memory.search` does not escape `LIKE` wildcards, `one_of` uses equality so `True` matches `1`, and the JSON extractor can miscount braces inside strings. | Low | n/a |
+| L11 | **Small edge cases:** `one_of` uses equality, so `True` matches `1`; a model reply with `"action": null` and no `params` is reported as invalid parameters instead of "no action"; a failed `spawn` can leave an orphan policy registered because `SafetyLayer` has no `unregister`. | Low | n/a |
 | L12 | **Not designed or tested for concurrent use.** | Low | One runtime per thread or process |
 | L13 | **No formal guarantees and no hardened boundary.** | n/a | Do not connect to critical systems or physical actuators |
 | L14 | **No step or model-call limit.** Blocked actions and `no_action` steps cost nothing, and nothing caps steps, model calls, or tool run time. A looping or injected agent can spend model tokens without touching the action budget. | Medium | Cap steps in your own loop; set provider and tool timeouts |
+| L15 | **`kill()` waits for a running step.** `kill` takes the same per-agent lock that `step` holds during `act()`, so the kill switch does not take effect until a long or hung action returns (measured: `kill()` returned after 2.7 s against a 3 s action). | High | Give tools their own timeouts. Calling `runtime.safety.trip_kill_switch(agent_id, reason)` from another thread denies the next action immediately, but does not stop the one in flight |
 
 Agent-provided explanations are evidence, not proof. Rollback cannot reverse irreversible external effects. Memory persistence does not create learning.
 
@@ -913,16 +923,20 @@ A milestone is complete when its acceptance criteria are met, not when a folder,
 - [x] Repository, package structure, initial runtime prototype
 - [x] Agent and policy abstractions; lifecycle and episodic memory paths
 - [x] Decision tracing; constrained tool use with an LLM-driven agent
-- [ ] **Reject negative, non-finite, and non-numeric action costs** (L1, first half; tests already written)
+- [ ] **Get CI green:** reconcile the 13 failing tests with the code (see [section 14](#14-testing)); restore Python 3.10 to the matrix if it stays supported
+- [ ] **Make `kill()` take effect without waiting for a running action** (L15)
+- [x] Reject negative, non-finite, and non-numeric action costs (L1, first half)
 - [ ] **Take action costs from the policy, not the agent** (L1, remaining half)
-- [ ] **Apply `_escape()` to untrusted input and history** in `LLMAgent.build_prompt` (L2, first half; tests already written)
+- [x] Escape untrusted input and history in `LLMAgent.build_prompt` (L2, first half)
 - [ ] Mark tool results as untrusted; consider a randomized delimiter (L2, remaining half)
 - [ ] **Restore the rate-limit window on rollback** (L3)
 - [ ] **Persist checkpoints and give agents stable ids** (L4)
-- [ ] Hand the agent a copy of `params` after the check (L6); guard `explain`, memory, and trace failures (L7)
+- [ ] Hand the agent a copy of `params` after the check (L6)
+- [x] Guard `explain`, memory, and trace failures (L7)
+- [ ] Add `SafetyLayer.unregister` so a failed `spawn` leaves no orphan policy (L11)
 - [ ] Read `MUFFIN_DB_PATH` and `MUFFIN_TRACE_PATH` (L9)
 - [ ] Add a step limit, a model-call budget, and timeouts (L14)
-- [ ] Turn each row of [docs/threat-model.md](docs/threat-model.md) into an adversarial test that runs in CI
+- [ ] Write `docs/threat-model.md` (referenced but not yet written), then turn each row into an adversarial test that runs in CI
 - [ ] Document state transitions and rollback semantics precisely; expand adversarial tests
 - [ ] Add `ruff` and `mypy` to CI; examples reproducible from a clean checkout
 
@@ -986,15 +1000,15 @@ MUFFIN/
 ├── LICENSE                       MIT
 ├── pyproject.toml                package metadata; extras: dev (pytest), llm (anthropic)
 ├── .env.example
-├── .github/workflows/ci.yml      tests on Python 3.10, 3.11, 3.12 + example smoke test
+├── .github/workflows/ci.yml      tests on Python 3.11 to 3.15 + example smoke test
 ├── docs/
 │   ├── vision.md                 why cognitive infrastructure; why not "building AGI"
-│   ├── architecture.md           the 11-layer specification, lifecycle, safety, observability
-│   └── threat-model.md           threat register for v0.1: assets, attackers, boundaries, status per threat
+│   └── architecture.md           the 11-layer specification, lifecycle, safety, observability
 ├── src/muffin/
 │   ├── agent.py  runtime.py  safety.py  rules.py
 │   ├── memory.py  trace.py  llm_agent.py  providers.py
-├── tests/                        test_runtime.py, test_param_rules.py, test_llm_agent.py
+├── tests/                        test_runtime.py, test_param_rules.py, test_llm_agent.py,
+│                                 test_safety.py, test_memory.py, test_trace.py
 ├── examples/                     hello_agent.py, llm_agent.py
 └── mathematics/  systems/  simulation/  cognitive-architecture/  founder-intelligence/
                                   placeholder folders for future research notes (empty for now)
