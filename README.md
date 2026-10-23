@@ -287,7 +287,7 @@ stateDiagram-v2
 | `step` / `run` | `running` only | One loop iteration; `run` stops as soon as the agent leaves `running` |
 | `checkpoint` | `configured`, `running`, `paused` | Returns a checkpoint id |
 | `rollback(id, checkpoint)` | `configured`, `running`, `paused` | Restores state, ends `paused` |
-| `kill(id, reason)` | any state | Trips the kill switch, state `terminated`; memory and state are preserved for post-mortem. Waits for an in-progress `step` to finish (L15) |
+| `kill(id, reason)` | any state | Trips the kill switch at once, so no further action is approved, and `state()` reports `terminated` immediately. Memory and state are preserved for post-mortem. It does not wait for a running `step`, and cannot interrupt an `act()` already in progress (L15) |
 
 Invalid transitions raise `MuffinRuntimeError` rather than silently doing nothing. A `failed` or `terminated` agent cannot be checkpointed or rolled back, and a `terminated` agent cannot be restarted. A `failed` agent can only be killed.
 
@@ -445,7 +445,7 @@ A fuller, row-by-row threat register is planned as `docs/threat-model.md`; that 
 
 - Agent code that performs side effects directly instead of through approved actions. The policy only governs what is routed through the runtime.
 - Malicious or buggy agent code that **declares its own `Action.cost`**. Invalid costs (negative, `NaN`, `inf`, boolean, non-numeric) are denied, but a cost of `0` never spends budget, so an agent can under-report (see [limitations](#15-known-limitations-v01), L1).
-- An action that is already running. `kill()` waits for the in-progress `step`, including its `act()`, to finish (L15).
+- Interrupting an action that is already running. `kill()` stops further actions immediately, but an in-flight `act()` runs to completion and is recorded; the `killed` trace entry is written when it returns (L15).
 - Credential theft, sandbox escape, supply-chain compromise, and network exfiltration. There is no sandbox or identity layer.
 - Detecting that a goal was hijacked. The runtime limits what a hijacked agent can *do*; it does not notice the hijack.
 
@@ -869,13 +869,13 @@ Injecting a clock into `SafetyLayer` makes rate-limit tests deterministic, which
 
 ## 14. Testing
 
-The suite has **95 tests** in six files and runs in well under a second. CI runs it on Python 3.11 through 3.15, then runs `examples/hello_agent.py` as a smoke test.
+The suite has **99 tests** in six files and runs in well under a second. CI runs it on Python 3.11 through 3.15, then runs `examples/hello_agent.py` as a smoke test.
 
-**Current status.** In the snapshot reviewed on 23 October 2026, all 95 tests pass locally on Python 3.12. An earlier snapshot had 13 failing tests; they were out-of-date assertions (message wording, the old single-`<input>` prompt format) and two broken trace tests, and were updated to match the code's behavior.
+**Current status.** In the snapshot reviewed on 23 October 2026, all 99 tests pass locally on Python 3.12. An earlier snapshot had 13 failing tests; they were out-of-date assertions (message wording, the old single-`<input>` prompt format) and two broken trace tests, and were updated to match the code's behavior.
 
 | File | Tests | Covers |
 |---|---|---|
-| `tests/test_runtime.py` | 21 | Allowed actions execute and are remembered; default deny; total budget; rate limit including window expiry; constraint veto; fail-closed on a crashing constraint; pause and resume; kill preserves memory; checkpoint and rollback restore state, memory, and budget; rollback is audited; an agent exception fails the agent without crashing the runtime; invalid transitions rejected; `run` stops when the agent leaves `running`; memory persists to disk; hostile costs (negative, `NaN`, `inf`, bool, string) are blocked and never spent; zero and normal costs still run |
+| `tests/test_runtime.py` | 25 | Allowed actions execute and are remembered; default deny; total budget; rate limit including window expiry; constraint veto; fail-closed on a crashing constraint; pause and resume; kill preserves memory; kill does not wait for a running action, is recorded once however often it is repeated, and leaves later lifecycle calls refused; checkpoint and rollback restore state, memory, and budget; rollback is audited; an agent exception fails the agent without crashing the runtime; invalid transitions rejected; `run` stops when the agent leaves `running`; memory persists to disk; hostile costs (negative, `NaN`, `inf`, bool, string) are blocked and never spent; zero and normal costs still run |
 | `tests/test_param_rules.py` | 21 | Good and bad parameters; `email_domain` against smuggling tricks (second address, newline injection, look-alike and sub-domains, empty, `None`, non-string); unexpected and missing params fail closed; rules apply only to their own action; a crashing rule fails closed; `number_between`; `matches` uses `fullmatch`; `one_of` |
 | `tests/test_llm_agent.py` | 13 | Approved tool call runs with explanation traced; real-but-unlisted tool blocked; hallucinated tool blocked, not crashed; prompt injection cannot exceed the policy; malformed output is a safe no-action; model outage does not kill the agent; JSON in code fences and chatter; tool errors reported, not fatal; budget governs the model; history reaches the next prompt and rollback restores it; JSON-extraction edge cases; untrusted input and tool results cannot close or forge the `<input>` tag |
 | `tests/test_safety.py` | 19 | Invalid cost denied; unknown agent and unapproved action denied; budget cannot be exceeded; invalid policy budgets rejected; infinite budget allowed; kill switch denies actions; restore rejects invalid spend; rate limit |
@@ -884,7 +884,7 @@ The suite has **95 tests** in six files and runs in well under a second. CI runs
 
 The project's rule is that a safety mechanism needs a test that proves it **blocks** something, because an untested safety mechanism is assumed broken.
 
-**Gaps worth closing** (also tracked in the [roadmap](#16-roadmap)): `kill()` while an action is running (L15); agents that under-report cost as zero (L1); mutating `params` inside `act` (L6); rollback with an active rate limit; failure injection around `act`, memory, and trace writes; concurrent use; and tests against the live provider behind an opt-in flag.
+**Gaps worth closing** (also tracked in the [roadmap](#16-roadmap)): a hung `act()` that never returns (L15); agents that under-report cost as zero (L1); mutating `params` inside `act` (L6); rollback with an active rate limit; failure injection around `act`, memory, and trace writes; concurrent use; and tests against the live provider behind an opt-in flag.
 
 ---
 
@@ -908,7 +908,7 @@ These are known gaps in the current code, listed so nobody relies on a guarantee
 | L12 | **Not designed or tested for concurrent use.** | Low | One runtime per thread or process |
 | L13 | **No formal guarantees and no hardened boundary.** | n/a | Do not connect to critical systems or physical actuators |
 | L14 | **No step or model-call limit.** Blocked actions and `no_action` steps cost nothing, and nothing caps steps, model calls, or tool run time. A looping or injected agent can spend model tokens without touching the action budget. | Medium | Cap steps in your own loop; set provider and tool timeouts |
-| L15 | **`kill()` waits for a running step.** `kill` takes the same per-agent lock that `step` holds during `act()`, so the kill switch does not take effect until a long or hung action returns (measured: `kill()` returned after 2.7 s against a 3 s action). | High | Give tools their own timeouts. Calling `runtime.safety.trip_kill_switch(agent_id, reason)` from another thread denies the next action immediately, but does not stop the one in flight |
+| L15 | **`kill()` cannot interrupt a running action.** It trips the kill switch and reports `terminated` immediately, so nothing further is approved, but an `act()` already in progress runs to completion: its outcome is recorded, and the `killed` trace entry is written after it returns. A hung `act()` is therefore not stopped. | Medium | Give tools their own timeouts; run agents that call untrusted or slow tools in a separate process you can terminate |
 
 Agent-provided explanations are evidence, not proof. Rollback cannot reverse irreversible external effects. Memory persistence does not create learning.
 
@@ -925,7 +925,8 @@ A milestone is complete when its acceptance criteria are met, not when a folder,
 - [x] Decision tracing; constrained tool use with an LLM-driven agent
 - [x] Reconcile the 13 failing tests with the code (see [section 14](#14-testing))
 - [ ] **Confirm CI is green on every version in the matrix**, and restore Python 3.10 to it if it stays supported
-- [ ] **Make `kill()` take effect without waiting for a running action** (L15)
+- [x] Make `kill()` take effect without waiting for a running action (L15, first half)
+- [ ] Stop a hung action: run tools under a timeout or in a separate process (L15, remaining half)
 - [x] Reject negative, non-finite, and non-numeric action costs (L1, first half)
 - [ ] **Take action costs from the policy, not the agent** (L1, remaining half)
 - [x] Escape untrusted input and history in `LLMAgent.build_prompt` (L2, first half)
