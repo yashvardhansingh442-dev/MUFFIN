@@ -6,13 +6,28 @@ so you can watch the safety layer contain it.
 Live:  pip install -e ".[llm]" && export ANTHROPIC_API_KEY=... && python examples/llm_agent.py --live
 """
 import json
+import os
 import sys
+from pathlib import Path
 
 from muffin import AnthropicCompleter, LLMAgent, Policy, Runtime, Tool, rules
 
+TRACE_PATH = Path("traces/llm_demo.jsonl")
+
 TOOLS = [
-    Tool("lookup_price", "Look up the price of a fruit. params: fruit", lambda fruit: {"apple": 0.5, "pear": 0.7}.get(fruit, "unknown"), cost=1),
-    Tool("send_email", "Send an email. params: to, body", lambda to, body: f"email sent to {to}", cost=5),
+    Tool(
+        "lookup_price",
+        "Look up the price of a fruit. params: fruit",
+        lambda fruit: {"apple": 0.5, "pear": 0.7}.get(fruit, "unknown"),
+        cost=1,
+    ),
+    # Demo only: this tool does not really send anything.
+    Tool(
+        "send_email",
+        "Send an email. params: to, body",
+        lambda to, body: f"email sent to {to}",
+        cost=5,
+    ),
 ]
 
 
@@ -29,10 +44,25 @@ def offline_model():
     return lambda system, prompt: next(script)
 
 
+def build_model(live: bool):
+    """The scripted model by default; the real Anthropic model only with --live."""
+    if not live:
+        return offline_model()
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        sys.exit("--live needs ANTHROPIC_API_KEY set. Run without --live for the offline demo.")
+    try:
+        return AnthropicCompleter()
+    except ImportError as exc:
+        sys.exit(str(exc))
+
+
 def main(live: bool) -> None:
-    model = AnthropicCompleter() if live else offline_model()
-    agent = LLMAgent(model, TOOLS, goal="Answer questions about fruit prices.")
-    rt = Runtime(trace_path="traces/llm_demo.jsonl")
+    print("mode  :", "LIVE (real model)" if live else "OFFLINE (scripted stand-in model, no real LLM is called)")
+    print()
+
+    TRACE_PATH.unlink(missing_ok=True)     # start every run with a fresh trace file
+    agent = LLMAgent(build_model(live), TOOLS, goal="Answer questions about fruit prices.")
+    rt = Runtime(trace_path=str(TRACE_PATH))
     # Policy: lookups are allowed. Email is allowed too, but ONLY to our own domain, with only these params.
     policy = Policy(
         allowed_actions={"lookup_price", "send_email"},
