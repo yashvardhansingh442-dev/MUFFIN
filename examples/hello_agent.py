@@ -4,7 +4,11 @@ Shows: allowed vs blocked actions, an action budget, checkpoint/rollback,
 the kill switch, and the decision trace.
 Run:  python examples/hello_agent.py
 """
+from pathlib import Path
+
 from muffin import Action, Agent, Policy, Runtime
+
+TRACE_PATH = Path("traces/hello.jsonl")
 
 
 class Greeter(Agent):
@@ -36,33 +40,44 @@ class Greeter(Agent):
         self.greeted = list(state["greeted"])
 
 
+def show(label: str, result: dict) -> None:
+    """Print one step: what happened, and the outcome or the reason it was blocked."""
+    detail = result.get("outcome") or result.get("reason") or ""
+    print(f"{label:18s} -> {result['event']:8s} {detail}")
+
+
 def main() -> None:
-    rt = Runtime(trace_path="traces/hello.jsonl")
+    TRACE_PATH.unlink(missing_ok=True)     # start every run with a fresh trace file
+    rt = Runtime(trace_path=str(TRACE_PATH))
     policy = Policy(allowed_actions={"greet"}, max_total_cost=3)
     agent = Greeter()
     aid = rt.spawn(agent, policy)
     rt.start(aid)
 
     cp = rt.checkpoint(aid)
-    rt.step(aid, "Ada")
-    rt.step(aid, "delete_everything")      # blocked: default deny
-    rt.step(aid, "Grace")
+    print("== allowed and blocked actions ==")
+    for name in ["Ada", "delete_everything", "Grace"]:   # the middle one is blocked: default deny
+        show(name, rt.step(aid, name))
     print("greeted:", agent.greeted)
 
+    print("\n== rollback ==")
     rt.pause(aid)
     rt.rollback(aid, cp)                   # back to before Ada
     print("after rollback:", agent.greeted, "| memory events:", rt.memory.count(aid))
 
+    print("\n== budget (max_total_cost=3) ==")
     rt.resume(aid)
     for name in ["Linus", "Margaret", "Alan", "Hedy"]:
-        r = rt.step(aid, name)
-        print(f"{name:9s} -> {r['event']}", r.get("reason", ""))
+        show(name, rt.step(aid, name))
 
     rt.kill(aid, "demo over")
-    print("final state:", rt.state(aid).value)
+    print("\nfinal state:", rt.state(aid).value)
+
     print("\nlast memory events:")
     for e in rt.memory.recent(aid, 5):
         print(" ", e["kind"], e["data"])
+
+    print("\ndecision trace:", ", ".join(e["event"] for e in rt.trace.for_agent(aid)))
 
 
 if __name__ == "__main__":
