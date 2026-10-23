@@ -869,9 +869,9 @@ Injecting a clock into `SafetyLayer` makes rate-limit tests deterministic, which
 
 ## 14. Testing
 
-The suite has **92 tests** in six files and runs in well under a second. CI runs it on Python 3.11 through 3.15, then runs `examples/hello_agent.py` as a smoke test.
+The suite has **95 tests** in six files and runs in well under a second. CI runs it on Python 3.11 through 3.15, then runs `examples/hello_agent.py` as a smoke test.
 
-**Current status.** In the snapshot reviewed on 23 October 2026, 79 tests pass and 13 fail, so CI is red. The failures are mismatches between tests and code, not missing fixes: six cost tests and two `LLMAgent` tests assert message wording the code no longer uses, three prompt tests assume the old unescaped, single-`<input>` prompt, and two trace tests are themselves broken (one passes `agent_id=` as a field, which Python rejects before the reserved-field check runs; the other tries to patch a read-only `PosixPath` method).
+**Current status.** In the snapshot reviewed on 23 October 2026, all 95 tests pass locally on Python 3.12. An earlier snapshot had 13 failing tests; they were out-of-date assertions (message wording, the old single-`<input>` prompt format) and two broken trace tests, and were updated to match the code's behavior.
 
 | File | Tests | Covers |
 |---|---|---|
@@ -880,7 +880,7 @@ The suite has **92 tests** in six files and runs in well under a second. CI runs
 | `tests/test_llm_agent.py` | 13 | Approved tool call runs with explanation traced; real-but-unlisted tool blocked; hallucinated tool blocked, not crashed; prompt injection cannot exceed the policy; malformed output is a safe no-action; model outage does not kill the agent; JSON in code fences and chatter; tool errors reported, not fatal; budget governs the model; history reaches the next prompt and rollback restores it; JSON-extraction edge cases; untrusted input and tool results cannot close or forge the `<input>` tag |
 | `tests/test_safety.py` | 19 | Invalid cost denied; unknown agent and unapproved action denied; budget cannot be exceeded; invalid policy budgets rejected; infinite budget allowed; kill switch denies actions; restore rejects invalid spend; rate limit |
 | `tests/test_memory.py` | 10 | Write and recent preserve order; agents have separate memories; `search` treats `%` and `_` literally; rollback deletes only the target agent's later events; invalid values and inputs rejected; unknown objects do not leak their repr; close prevents further use; file databases persist |
-| `tests/test_trace.py` | 8 | Unique ids; JSONL output; reserved fields; returned records are detached; invalid JSON numbers rejected; a failed write adds no entry; unknown objects do not use repr; invalid agent ids and events rejected |
+| `tests/test_trace.py` | 11 | Unique ids; JSONL output; reserved fields (`decision_id`, `ts`); `agent_id` and `event` cannot be passed as extra fields; returned records are detached; invalid JSON numbers rejected; a failed write adds no entry; unknown objects do not use repr; invalid agent ids and events rejected |
 
 The project's rule is that a safety mechanism needs a test that proves it **blocks** something, because an untested safety mechanism is assumed broken.
 
@@ -923,7 +923,8 @@ A milestone is complete when its acceptance criteria are met, not when a folder,
 - [x] Repository, package structure, initial runtime prototype
 - [x] Agent and policy abstractions; lifecycle and episodic memory paths
 - [x] Decision tracing; constrained tool use with an LLM-driven agent
-- [ ] **Get CI green:** reconcile the 13 failing tests with the code (see [section 14](#14-testing)); restore Python 3.10 to the matrix if it stays supported
+- [x] Reconcile the 13 failing tests with the code (see [section 14](#14-testing))
+- [ ] **Confirm CI is green on every version in the matrix**, and restore Python 3.10 to it if it stays supported
 - [ ] **Make `kill()` take effect without waiting for a running action** (L15)
 - [x] Reject negative, non-finite, and non-numeric action costs (L1, first half)
 - [ ] **Take action costs from the policy, not the agent** (L1, remaining half)
