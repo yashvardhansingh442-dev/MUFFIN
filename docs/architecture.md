@@ -5,6 +5,8 @@ This document describes the layered architecture of MUFFIN.AI: what each layer i
 > **Implemented in v0.1 (see `src/muffin/`):** agent lifecycle (spawn, start, pause, resume, checkpoint, rollback, kill), episodic memory, a default-deny safety layer (allowed actions, budgets, rate limits, constraints, parameter rules, kill switch), decision traces, and an LLM-driven agent. **Not yet built:** semantic and procedural memory, the learning engine, planning services, multi-agent coordination, metrics/dashboards, and the control panel.
 >
 > **Status:** design-stage. The layer structure and responsibilities come from the MUFFIN roadmap. Concrete interfaces, schemas, and tooling choices in this document are **proposed designs** and will change as prototypes teach us what works.
+>
+> **Known gaps in v0.1:** see the README's [known limitations](../README.md#15-known-limitations-v01) and the [threat model](threat-model.md). Where this document states a design goal that v0.1 does not yet meet, a note says so.
 
 ---
 
@@ -37,7 +39,7 @@ This document describes the layered architecture of MUFFIN.AI: what each layer i
 | 3 | **Independently testable** | Every layer can be tested alone with mocks of its neighbors |
 | 4 | **Defined interfaces** | Every boundary has an explicit contract (API, schema, or protocol) |
 | 5 | **Every component maps to a cognitive function** | If we cannot name the cognitive role a component plays, we do not build it yet |
-| 6 | **Explainability over performance** | If we cannot explain why an agent made a decision, the work is unfinished |
+| 6 | **Explainability over performance** | If we cannot trace what an agent did and why it was allowed, the work is unfinished. An agent's own explanation is evidence, not proof |
 | 7 | **Failure-first design** | Failure modes are designed for before happy paths |
 | 8 | **Model-agnostic** | MUFFIN manages cognition; it does not depend on any one model |
 | 9 | **Observable by default** | Every layer emits structured events, metrics, and traces |
@@ -194,7 +196,9 @@ The runtime hosts a standard cognitive loop. **The agent developer implements on
 | Act | Agent developer | Tool/actuator adapters, rate limits |
 | Observe and record | **Runtime** | Logging, memory writes, metrics, learning signals |
 
-**Key rule:** an agent cannot bypass the safety check. Actions are submitted *to* the runtime; they are not executed directly.
+**Key rule:** an agent must not be able to bypass the safety check. Actions are submitted *to* the runtime and executed only if approved.
+
+> **v0.1 enforces this only for actions routed through the runtime.** `act()` is the agent's own code, so it can still perform side effects directly, and there is no process isolation yet (README limitation L5; threat model T5). Moving tool execution into the runtime is the planned fix.
 
 ---
 
@@ -240,6 +244,8 @@ The runtime hosts a standard cognitive loop. **The agent developer implements on
 | **Rollback** | Restores a previous checkpoint |
 | **Kill** | Terminates with state preserved for post-mortem |
 
+> **v0.1 differs from this design.** The implemented states are `configured`, `running`, `paused`, `failed` and `terminated`. `spawn` already configures the agent (there is no separate `CREATED` state), the operation is `start`, and checkpoint is an operation, not a state. `rollback` leaves the agent `paused`, and it can also be applied from `failed`. Checkpoints live in process memory and are lost on restart, agents are not isolated from each other, and rollback does not restore the rate-limit window or undo external side effects (README sections 5.2, 10 and 15).
+
 ---
 
 ## 6. Memory Architecture
@@ -281,13 +287,15 @@ Memory is modeled on four functionally distinct types, each with its own storage
 - Memory is **versioned** so rollback is exact
 - Deletions are logged; "forget" is a policy event, not a silent operation
 
+> **v0.1:** only episodic memory exists, in SQLite (not the proposed backends above). Each record has an agent id, timestamp, kind and JSON data. There is no source or confidence tag, no checksum, and no versioning: rollback deletes events newer than the checkpoint. The runtime does not feed memory back into the agent's prompt.
+
 ---
 
 ## 7. Safety Architecture
 
 Safety is **engineering**: feedback loops, limits, monitoring, and control. It is enforced by the runtime, not requested from the agent.
 
-### 7.1 Four mechanisms
+### 7.1 Five mechanisms
 
 | Mechanism | Purpose | Example |
 |---|---|---|
@@ -324,7 +332,7 @@ Safety is **engineering**: feedback loops, limits, monitoring, and control. It i
 ### 7.3 Safety rules
 
 1. **Default deny** for new or unknown action types
-2. **Safety runs outside the agent's control**: the agent cannot disable, modify, or bypass it
+2. **Safety runs outside the agent's control**: the agent must not be able to disable, modify, or bypass it (in v0.1 this holds for routed actions only; see the key rule in section 4)
 3. **Kill switches are tested regularly**, not assumed to work
 4. **Fail safe:** if the safety layer cannot reach a verdict, the action is blocked
 5. **Every override is audited**
@@ -341,6 +349,8 @@ The v0.1 safety layer (`safety.py`, `rules.py`) checks every proposed action in 
 6. **Constraints:** custom functions that can veto an action
 
 Any exception raised during a check is converted into a denial (**fail closed**).
+
+**Not yet in this list:** validation of `Action.cost` before the budget check. A negative or `NaN` cost currently slips through (README limitation L1; tests for it are written).
 
 **Parameter rule helpers** (`muffin.rules`): `required`, `only_keys`, `one_of`, `matches` (full-match regex), `max_len`, `number_between`, `email_domain`. They are written to resist common tricks: smuggled `@` signs, domain-suffix tricks, subdomains, multiple recipients, newline injection, path traversal, and wrong types (strings, booleans, NaN passed as numbers).
 
@@ -402,7 +412,9 @@ outcome       (result observed afterward)
 explanation   (the agent's own stated reason, via Agent.explain())
 ```
 
-This is what makes an agent's behavior **explainable and auditable**.
+This is what makes an agent's behavior **traceable and auditable**. The `explanation` field is the agent's own claim: evidence for debugging, not proof of the real reason.
+
+> **v0.1 records a subset:** `decision_id`, `agent_id`, `ts` and `event` on every entry, plus `step`, `perception`, `action`, `params`, `verdict`, `outcome`, `explanation` and (for blocked actions) `reason`, depending on the event. There are no `beliefs`, `goals` or `candidates` fields yet, and params and outcomes are stored verbatim with no redaction (README limitation L8).
 
 ---
 
@@ -416,16 +428,16 @@ This is what makes an agent's behavior **explainable and auditable**.
 | **Safety API** | Safety layer and auditors | Define policies, query verdicts, trigger overrides | L6 |
 | **Public API** | External integrators | Stable, versioned external surface | L10 |
 
-### Illustrative Agent SDK shape (Python, proposed)
+### Agent SDK shape (Python, as in v0.1)
 
 ```python
-from muffin import Agent, Perception, Action
+from muffin import Action, Agent
 
 class MyAgent(Agent):
-    def perceive(self, raw_input) -> Perception: ...
-    def update_beliefs(self, perception: Perception) -> None: ...
-    def decide(self) -> Action: ...
-    def act(self, action: Action) -> None: ...
+    def perceive(self, raw_input): ...                 # optional (default: identity)
+    def update_beliefs(self, perception) -> None: ...  # optional
+    def decide(self) -> Action | None: ...             # required
+    def act(self, action: Action): ...                 # required; the return value is the outcome
 
 # Everything else (memory, logging, safety, lifecycle) is provided by the runtime.
 ```
@@ -433,7 +445,7 @@ class MyAgent(Agent):
 ### Implemented SDK additions (v0.1)
 
 - **`Agent.explain()`** is an optional hook. Whatever it returns is recorded as `explanation` in the decision trace for acted, blocked, and no-action steps.
-- **`LLMAgent`** (`llm_agent.py`) uses a language model as the `decide` step. Each turn the model returns JSON `{"action", "params", "reason"}`. Untrusted input is delimited in `<input>` tags and the system prompt instructs the model to treat it as data. Unknown or hallucinated tool names are passed through on purpose so the **safety layer, not the agent, says no**. Unparseable replies and model outages become safe no-actions.
+- **`LLMAgent`** (`llm_agent.py`) uses a language model as the `decide` step. Each turn the model returns JSON `{"action", "params", "reason"}`. Untrusted input is delimited in `<input>` tags and the system prompt instructs the model to treat it as data. An escaping helper for `<`, `>` and `&` in that input exists (`_escape`) but is not applied yet (README limitation L2). Unknown or hallucinated tool names are passed through on purpose so the **safety layer, not the agent, says no**. Unparseable replies and model outages become safe no-actions.
 - **Providers** (`providers.py`): an agent needs only a function `complete(system, prompt) -> str`. `AnthropicCompleter` is the bundled implementation (optional dependency `muffin-ai[llm]`). It follows the public SDK interface but is not exercised against the live API in the test suite.
 
 **Security stance:** assume the model can be fully compromised by prompt injection. Containment comes from the policy enforced outside the model, not from the model behaving well.
@@ -554,7 +566,7 @@ Built bottom-up, with a **minimal vertical slice first** so that value is demons
 | **10** | Multi-agent coordination | L7 |
 | **11** | Public API and SDK | L10 |
 
-**Status against this plan (v0.1):** stages 1 and 2 are done, as are the episodic part of stage 3, the structured-logging part of stage 4, and stage 5 (constraints, budgets, kill switch, plus parameter rules). The decision-trace half of stage 6 is done; metrics and the dashboard are not. Stages 7 to 11 are not started.
+**Status against this plan (v0.1):** stage 1 is done. Stage 2 is partly done (in-process checkpoints and a partial rollback; see README limitations L3 and L4). The episodic part of stage 3 and the structured-logging part of stage 4 are done. Stage 5 has its initial controls (constraints, budgets, kill switch, parameter rules), with known holes tracked as README limitations L1, L2 and L14. The decision-trace half of stage 6 is done; metrics and the dashboard are not. Stages 7 to 11 are not started.
 
 **First vertical slice (recommended wedge):** a runtime that can run a simple agent with persistent episodic memory, a hard kill switch, action budgets, and a decision-trace log. That alone demonstrates the core promise: *an agent you can remember, control, and explain.*
 
