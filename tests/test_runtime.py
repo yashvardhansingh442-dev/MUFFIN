@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 
 from muffin import (
@@ -200,3 +202,110 @@ def test_zero_and_normal_cost_still_allowed():
         agent_id = rt.spawn(_CostAgent(cost), Policy({"x"}, max_total_cost=1))
         rt.start(agent_id)
         assert rt.step(agent_id)["event"] == "acted"
+
+
+class _BlockingAgent(Agent):
+    """Its act() blocks until the test releases it, like a slow or hung tool."""
+
+    def __init__(self):
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def decide(self):
+        return Action("work")
+
+    def act(self, action):
+        self.started.set()
+        self.release.wait(5)
+        return "done"
+
+
+def test_kill_does_not_wait_for_a_running_action():
+    agent = _BlockingAgent()
+    rt = Runtime()
+    aid = rt.spawn(agent, Policy({"work"}))
+    rt.start(aid)
+
+    results = []
+    stepper = threading.Thread(target=lambda: results.append(rt.step(aid)))
+    stepper.start()
+    assert agent.started.wait(5)
+
+    killer = threading.Thread(target=lambda: rt.kill(aid, "stop now"))
+    killer.start()
+    killer.join(timeout=2)
+    try:
+        assert not killer.is_alive(), "kill() blocked behind the running action"
+        # No further action can be approved, and the state already says so.
+        assert rt.safety.is_killed(aid) == "stop now"
+        assert rt.state(aid) == State.TERMINATED
+        assert rt.safety.check(aid, Action("work")).allowed is False
+    finally:
+        agent.release.set()
+        stepper.join(5)
+        killer.join(5)
+
+    # The in-flight action cannot be interrupted: it finishes and is recorded.
+    assert results[0]["event"] == "acted"
+    assert rt.memory.count(aid) == 1
+
+    events = [e["event"] for e in rt.trace.for_agent(aid)]
+    assert events.count("killed") == 1
+    assert events.index("acted") < events.index("killed")
+    killed = [e for e in rt.trace.for_agent(aid) if e["event"] == "killed"][0]
+    assert killed["reason"] == "stop now"
+
+    assert rt.state(aid) == State.TERMINATED
+    with pytest.raises(MuffinRuntimeError):
+        rt.step(aid)
+
+
+def test_kill_while_running_is_recorded_once_even_if_repeated():
+    agent = _BlockingAgent()
+    rt = Runtime()
+    aid = rt.spawn(agent, Policy({"work"}))
+    rt.start(aid)
+
+    stepper = threading.Thread(target=lambda: rt.step(aid))
+    stepper.start()
+    assert agent.started.wait(5)
+    try:
+        rt.kill(aid, "first")
+        rt.kill(aid, "second")
+    finally:
+        agent.release.set()
+        stepper.join(5)
+    rt.kill(aid, "third")
+
+    kills = [e for e in rt.trace.for_agent(aid) if e["event"] == "killed"]
+    assert len(kills) == 1 and kills[0]["reason"] == "first"
+
+
+def test_kill_while_idle_is_immediate_and_recorded_once():
+    rt = Runtime()
+    aid = rt.spawn(Counter(), Policy({"increment"}))
+    rt.start(aid)
+    rt.kill(aid, "done")
+    rt.kill(aid, "again")
+
+    assert rt.state(aid) == State.TERMINATED
+    kills = [e for e in rt.trace.for_agent(aid) if e["event"] == "killed"]
+    assert len(kills) == 1 and kills[0]["reason"] == "done"
+
+
+def test_lifecycle_calls_after_a_pending_kill_are_refused():
+    agent = _BlockingAgent()
+    rt = Runtime()
+    aid = rt.spawn(agent, Policy({"work"}))
+    rt.start(aid)
+
+    stepper = threading.Thread(target=lambda: rt.step(aid))
+    stepper.start()
+    assert agent.started.wait(5)
+    rt.kill(aid, "stop")
+    agent.release.set()
+    stepper.join(5)
+
+    for call in (rt.pause, rt.resume, rt.checkpoint):
+        with pytest.raises(MuffinRuntimeError):
+            call(aid)
