@@ -1,13 +1,13 @@
-
 """Cognitive runtime: lifecycle, safety, memory, and decision tracing."""
 from __future__ import annotations
 
 import copy
 import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable
+from typing import Any, Iterator, Iterable
 
 from .agent import Agent
 from .memory import EpisodicMemory
@@ -34,6 +34,11 @@ class _Handle:
     step: int = 0
     checkpoints: dict[str, dict[str, Any]] = field(default_factory=dict)
     lock: threading.RLock = field(default_factory=threading.RLock)
+    # Kill bookkeeping. `kill_reason` is set the moment kill() is requested, before
+    # the handle lock is needed, so a running step cannot delay it.
+    kill_reason: str | None = None
+    kill_recorded: bool = False
+    kill_mutex: threading.Lock = field(default_factory=threading.Lock)
 
 
 class Runtime:
@@ -97,35 +102,47 @@ class Runtime:
         )
 
     def kill(self, agent_id: str, reason: str = "operator") -> None:
-        """Terminate an agent and preserve its memory for post-mortem review."""
+        """Terminate an agent and preserve its memory for post-mortem review.
+
+        The kill switch trips immediately and `state()` reports `terminated` at once,
+        so no further action can be approved. kill() does not wait for a step that is
+        already running and cannot interrupt its `act()`: that action runs to
+        completion and is recorded, and the `killed` trace entry is written when the
+        step returns.
+        """
         handle = self._handle(agent_id)
 
-        with handle.lock:
-            if handle.state == State.TERMINATED:
+        with handle.kill_mutex:
+            if handle.kill_reason is not None or handle.state == State.TERMINATED:
                 return
 
-            # Engage the safety mechanism before changing visible state.
+            # Engage the safety mechanism before anything else, without taking the
+            # handle lock that a running step holds.
             self.safety.trip_kill_switch(agent_id, reason)
-            handle.state = State.TERMINATED
+            handle.kill_reason = reason
 
-            self.trace.record(
-                agent_id,
-                "killed",
-                reason=reason,
-                step=handle.step,
-            )
+        # If nothing is running, finish the termination now. Otherwise the running
+        # step (or other lifecycle call) finishes it as it releases the lock.
+        if handle.lock.acquire(blocking=False):
+            try:
+                self._finalize_kill(agent_id, handle, raise_errors=True)
+            finally:
+                handle.lock.release()
 
     def state(self, agent_id: str) -> State:
         handle = self._handle(agent_id)
-        with handle.lock:
-            return handle.state
+        # Lock-free on purpose: this must not block behind a running action. A kill
+        # that has been requested but not yet finalized already reads as terminated.
+        if handle.kill_reason is not None:
+            return State.TERMINATED
+        return handle.state
 
     # ---- checkpoint / rollback --------------------------------------
 
     def checkpoint(self, agent_id: str) -> str:
         handle = self._handle(agent_id)
 
-        with handle.lock:
+        with self._guard(agent_id, handle):
             if handle.state in {State.TERMINATED, State.FAILED}:
                 raise MuffinRuntimeError(
                     f"cannot checkpoint an agent in {handle.state.value} state"
@@ -159,7 +176,7 @@ class Runtime:
         """
         handle = self._handle(agent_id)
 
-        with handle.lock:
+        with self._guard(agent_id, handle):
             if handle.state in {State.TERMINATED, State.FAILED}:
                 raise MuffinRuntimeError(
                     f"cannot roll back an agent in {handle.state.value} state"
@@ -257,7 +274,7 @@ class Runtime:
         handle = self._handle(agent_id)
 
         # Serialize steps and lifecycle changes for this agent.
-        with handle.lock:
+        with self._guard(agent_id, handle):
             if handle.state != State.RUNNING:
                 raise MuffinRuntimeError(
                     f"agent is {handle.state.value}, not running"
@@ -265,12 +282,8 @@ class Runtime:
 
             killed = self.safety.is_killed(agent_id)
             if killed:
-                handle.state = State.TERMINATED
-                return self.trace.record(
-                    agent_id,
-                    "killed",
-                    reason="kill switch active",
-                    step=handle.step,
+                return self._terminate_from_switch(
+                    agent_id, handle, "kill switch active"
                 )
 
             handle.step += 1
@@ -332,12 +345,8 @@ class Runtime:
             # Re-check the kill switch immediately before execution. This
             # narrows (but cannot eliminate) the race with a concurrent kill.
             if self.safety.is_killed(agent_id):
-                handle.state = State.TERMINATED
-                return self.trace.record(
-                    agent_id,
-                    "killed",
-                    reason="kill switch active before action execution",
-                    step=handle.step,
+                return self._terminate_from_switch(
+                    agent_id, handle, "kill switch active before action execution"
                 )
 
             # Persist the intent before attempting the external operation.
@@ -433,6 +442,49 @@ class Runtime:
 
     # ---- internals ---------------------------------------------------
 
+    @contextmanager
+    def _guard(self, agent_id: str, handle: _Handle) -> Iterator[None]:
+        """Hold the agent's lock; on release, finish any kill requested meanwhile."""
+        with handle.lock:
+            try:
+                yield
+            finally:
+                self._finalize_kill(agent_id, handle)
+
+    def _finalize_kill(
+        self, agent_id: str, handle: _Handle, *, raise_errors: bool = False
+    ) -> None:
+        """Complete a requested kill. Call with the handle lock held."""
+        reason = handle.kill_reason
+        if reason is None:
+            return
+
+        handle.state = State.TERMINATED
+        if handle.kill_recorded:
+            return
+
+        try:
+            self.trace.record(agent_id, "killed", reason=reason, step=handle.step)
+            handle.kill_recorded = True
+        except Exception:
+            # The state change above stands; a later call retries the trace entry.
+            if raise_errors:
+                raise
+
+    def _terminate_from_switch(
+        self, agent_id: str, handle: _Handle, default_reason: str
+    ) -> dict[str, Any]:
+        """The step loop found the kill switch tripped: terminate and record it."""
+        handle.state = State.TERMINATED
+        entry = self.trace.record(
+            agent_id,
+            "killed",
+            reason=handle.kill_reason or default_reason,
+            step=handle.step,
+        )
+        handle.kill_recorded = True
+        return entry
+
     def _handle(self, agent_id: str) -> _Handle:
         with self._lock:
             self._ensure_open()
@@ -452,7 +504,7 @@ class Runtime:
     ) -> None:
         handle = self._handle(agent_id)
 
-        with handle.lock:
+        with self._guard(agent_id, handle):
             if handle.state not in allowed_from:
                 raise MuffinRuntimeError(
                     f"cannot {event}: agent is {handle.state.value}"
