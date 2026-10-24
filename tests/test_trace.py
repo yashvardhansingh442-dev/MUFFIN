@@ -107,3 +107,48 @@ def test_invalid_agent_and_event_are_rejected():
 
     with pytest.raises(ValueError):
         log.record("agent-1", "")
+
+
+@pytest.mark.parametrize("agent_id, event", [
+    ("   ", "action"),
+    ("agent-1", "   "),
+    (5, "action"),
+    ("agent-1", None),
+])
+def test_blank_or_non_string_agent_and_event_are_rejected(agent_id, event):
+    log = TraceLog()
+
+    with pytest.raises(ValueError):
+        log.record(agent_id, event)
+
+    assert log.entries == []
+
+
+def test_records_are_timestamped_in_order():
+    log = TraceLog()
+
+    first = log.record("agent-1", "started")
+    second = log.record("agent-1", "finished")
+
+    assert 0 < first["ts"] <= second["ts"]
+
+
+def test_for_agent_returns_only_that_agents_detached_records():
+    log = TraceLog()
+    log.record("agent-1", "action", details={"tool": "search"})
+    log.record("agent-2", "action")
+
+    records = log.for_agent("agent-1")
+    records[0]["details"]["tool"] = "malicious"
+
+    assert [r["event"] for r in records] == ["action"]
+    assert log.for_agent("agent-1")[0]["details"]["tool"] == "search"
+
+
+def test_non_ascii_text_stays_readable_in_the_file(tmp_path):
+    path = tmp_path / "trace.jsonl"
+    log = TraceLog(str(path))
+
+    log.record("agent-1", "note", text="café")
+
+    assert "café" in path.read_text(encoding="utf-8")
