@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from muffin import LLMAgent, Policy, Runtime, State, Tool
 from muffin.llm_agent import _extract_json
 
@@ -142,3 +144,57 @@ def test_tool_results_in_history_cannot_forge_tags():
     assert prompt.count("<input>") == 2
     assert prompt.count("</input>") == 2
     assert "&lt;/input&gt;&lt;input&gt;forged" in prompt
+
+
+@pytest.mark.parametrize("tools, kwargs", [
+    ([TOOLS[0], TOOLS[0]], {}),                              # duplicate name
+    ([Tool(" ", "d", lambda: 1)], {}),                       # blank name
+    ([Tool("x", "d", lambda: 1, cost=-1)], {}),              # negative cost
+    ([Tool("x", "d", lambda: 1, cost=float("nan"))], {}),    # NaN cost
+    ([Tool("x", "d", 42)], {}),                              # not callable
+    (TOOLS, {"history_limit": -1}),
+    (TOOLS, {"history_limit": True}),
+])
+def test_bad_agent_setup_is_rejected(tools, kwargs):
+    with pytest.raises(ValueError):
+        LLMAgent(lambda system, prompt: "{}", tools, goal="g", **kwargs)
+
+
+@pytest.mark.parametrize("state", [
+    "x",
+    {"history": 5},                                          # not a list
+    {"history": ["x"]},
+    {"history": [{"action": "add", "params": {}}]},          # no result
+])
+def test_bad_saved_state_is_rejected_and_changes_nothing(state):
+    agent = LLMAgent(lambda system, prompt: "{}", TOOLS, goal="g")
+    entry = {"action": "add", "params": {}, "result": 1}
+    agent.history.append(entry)
+    with pytest.raises(ValueError):
+        agent.set_state(state)
+    assert agent.history == [entry]
+
+
+@pytest.mark.parametrize("bad, why", [
+    ({"action": 5, "params": {}, "reason": "r"}, "invalid action name"),
+    ({"action": "add", "params": [1], "reason": "r"}, "invalid action parameters"),
+    ({"action": "add", "params": {}, "reason": 7}, "invalid reason"),
+])
+def test_invalid_model_fields_are_a_safe_no_action(bad, why):
+    rt, agent, aid = setup(scripted(json.dumps(bad)))
+    r = rt.step(aid)
+    assert r["event"] == "no_action" and why in r["explanation"]
+    assert agent.history == []
+
+
+def test_model_choosing_no_action_is_not_an_error():
+    rt, agent, aid = setup(scripted(reply(None, reason="nothing to do")))
+    r = rt.step(aid)
+    assert r["event"] == "no_action" and r["explanation"] == "nothing to do"
+
+
+def test_allowed_name_that_is_not_a_tool_is_an_error_result_not_a_crash():
+    rt, agent, aid = setup(scripted(reply("ghost")), allowed=("ghost",))
+    r = rt.step(aid)
+    assert r["event"] == "acted" and "no such tool" in str(r["outcome"])
+    assert rt.state(aid) == State.RUNNING
