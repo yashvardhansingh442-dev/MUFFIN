@@ -1,4 +1,3 @@
-
 import json
 
 import pytest
@@ -121,3 +120,83 @@ def test_file_database_persists_events(tmp_path):
 
     with EpisodicMemory(path) as memory:
         assert memory.recent("agent-1")[0]["data"]["value"] == 42
+
+
+def test_recent_and_search_never_cross_agents():
+    memory = EpisodicMemory()
+    memory.write("agent-1", "note", {"secret": "alpha"})
+    memory.write("agent-2", "note", {"secret": "beta"})
+
+    assert [e["data"]["secret"] for e in memory.recent("agent-2")] == ["beta"]
+    assert memory.search("agent-2", "alpha") == []
+    assert len(memory.search("agent-1", "alpha")) == 1
+
+
+def test_limits_are_respected_and_search_is_newest_first():
+    memory = EpisodicMemory()
+    for n in (1, 2, 3):
+        memory.write("agent-1", "note", {"n": n})
+
+    assert [e["data"]["n"] for e in memory.recent("agent-1", limit=2)] == [2, 3]
+    # "note" appears only in the kind, so this also proves search matches on kind
+    assert [e["data"]["n"] for e in memory.search("agent-1", "note", limit=2)] == [3, 2]
+
+
+def test_last_id_is_per_agent_and_zero_when_empty():
+    memory = EpisodicMemory()
+    first = memory.write("agent-1", "note", {})
+    other = memory.write("agent-2", "note", {})
+
+    assert memory.last_id("agent-1") == first
+    assert memory.last_id("agent-2") == other
+    assert memory.last_id("nobody") == 0
+
+
+@pytest.mark.parametrize("bad", [True, -1, 1.5])
+def test_bad_limits_and_markers_are_rejected(bad):
+    memory = EpisodicMemory()
+
+    with pytest.raises(ValueError):
+        memory.recent("agent-1", limit=bad)
+
+    with pytest.raises(ValueError):
+        memory.truncate_after("agent-1", bad)
+
+
+def test_wrong_argument_types_are_rejected():
+    memory = EpisodicMemory()
+
+    with pytest.raises(ValueError):
+        memory.write("agent-1", "note", [1, 2])
+
+    with pytest.raises(ValueError):
+        memory.search("agent-1", 5)
+
+
+def test_search_treats_backslash_as_literal():
+    memory = EpisodicMemory()
+    memory.write("agent-1", "note", {"text": "C:\\temp"})
+    memory.write("agent-1", "note", {"text": "100%"})
+
+    results = memory.search("agent-1", "\\")
+
+    assert [e["data"]["text"] for e in results] == ["C:\\temp"]
+
+
+def test_events_are_timestamped_in_order():
+    memory = EpisodicMemory()
+    memory.write("agent-1", "note", {})
+    memory.write("agent-1", "note", {})
+
+    first, second = memory.recent("agent-1")
+
+    assert 0 < first["ts"] <= second["ts"]
+
+
+def test_file_database_creates_missing_folders(tmp_path):
+    path = tmp_path / "a" / "b" / "memory.sqlite3"
+
+    with EpisodicMemory(str(path)) as memory:
+        memory.write("agent-1", "note", {})
+
+    assert path.exists()
