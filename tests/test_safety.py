@@ -1,4 +1,3 @@
-
 import math
 import pytest
 
@@ -93,3 +92,27 @@ def test_rate_limit():
     assert not layer.check("agent-1", action).allowed
     now[0] += 61
     assert layer.check("agent-1", action).allowed
+
+
+def test_policy_cost_overrides_a_zero_declared_cost():
+    layer = SafetyLayer()
+    layer.register("a", Policy(allowed_actions={"x"}, max_total_cost=2, costs={"x": 1}))
+    cheat = Action("x", {}, cost=0)
+    for _ in range(2):
+        assert layer.check("a", cheat).allowed
+        layer.commit("a", cheat)
+    assert not layer.check("a", cheat).allowed
+
+
+@pytest.mark.parametrize("costs", [{"x": -1}, {"x": float("nan")}, {"x": True}, {"": 1}, [("x", 1)]])
+def test_invalid_policy_costs_rejected(costs):
+    with pytest.raises((ValueError, TypeError)):
+        SafetyLayer().register("a", Policy(allowed_actions={"x"}, costs=costs))
+
+
+def test_unregister_removes_agent():
+    layer = SafetyLayer()
+    layer.register("a", Policy(allowed_actions={"x"}))
+    layer.unregister("a")
+    layer.unregister("a")  # idempotent
+    assert not layer.check("a", Action("x", {})).allowed
