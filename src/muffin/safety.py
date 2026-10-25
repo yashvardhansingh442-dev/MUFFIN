@@ -1,4 +1,3 @@
-
 """Safety layer: default-deny, fail-closed enforcement outside the agent's control."""
 from __future__ import annotations
 
@@ -44,6 +43,8 @@ class Policy:
     window_seconds: float = 60.0
     constraints: list[Constraint] = field(default_factory=list)
     param_rules: dict[str, list[ParamRule]] = field(default_factory=dict)
+    # Trusted cost per action name; overrides the cost the agent declares.
+    costs: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,12 @@ class SafetyLayer:
         ):
             raise ValueError("constraints must be a list of callables")
 
+        if not isinstance(policy.costs, dict) or any(
+            not isinstance(name, str) or not name or not _valid_cost(cost)
+            for name, cost in policy.costs.items()
+        ):
+            raise ValueError("costs must map action names to finite, non-negative numbers")
+
         if not isinstance(policy.param_rules, dict):
             raise TypeError("param_rules must be a dictionary")
 
@@ -134,6 +141,11 @@ class SafetyLayer:
             self._spent[agent_id] = 0.0
             self._recent[agent_id] = deque()
             self._killed.pop(agent_id, None)
+
+    def unregister(self, agent_id: str) -> None:
+        with self._lock:
+            for table in (self._policies, self._spent, self._recent, self._killed):
+                table.pop(agent_id, None)
 
     # ---- kill switch -------------------------------------------------
 
@@ -182,7 +194,7 @@ class SafetyLayer:
         # Validate mutable policy state again in case it was changed after registration.
         self._validate_policy(policy)
 
-        if self._spent[agent_id] + action.cost > policy.max_total_cost:
+        if self._spent[agent_id] + policy.costs.get(action.name, action.cost) > policy.max_total_cost:
             return Verdict(False, "total action budget exceeded")
 
         if policy.max_actions_per_window is not None:
@@ -228,7 +240,7 @@ class SafetyLayer:
                 raise ValueError("invalid safety clock")
 
             policy = self._policies[agent_id]
-            new_spent = self._spent[agent_id] + action.cost
+            new_spent = self._spent[agent_id] + policy.costs.get(action.name, action.cost)
             if not math.isfinite(new_spent) or new_spent > policy.max_total_cost:
                 raise ValueError("commit would exceed the action budget")
 
