@@ -47,7 +47,13 @@ class Runtime:
         db_path: str = ":memory:",
         trace_path: str | None = None,
         safety: SafetyLayer | None = None,
+        max_steps: int | None = None,
     ) -> None:
+        if max_steps is not None and (
+            isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps < 1
+        ):
+            raise ValueError("max_steps must be a positive integer or None")
+        self.max_steps = max_steps  # per agent; counts blocked and no_action steps too
         self.memory = EpisodicMemory(db_path)
         self.safety = safety or SafetyLayer()
         self.trace = TraceLog(trace_path)
@@ -285,6 +291,9 @@ class Runtime:
                 return self._terminate_from_switch(
                     agent_id, handle, "kill switch active"
                 )
+
+            if self.max_steps is not None and handle.step >= self.max_steps:
+                return self._fail(agent_id, handle, "step limit reached")
 
             handle.step += 1
 
