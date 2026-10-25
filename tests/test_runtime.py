@@ -388,3 +388,17 @@ def test_uncopyable_params_fail_the_agent_and_do_not_execute():
     assert entry["event"] == "failed"
     assert rt.state(aid) == State.FAILED
     assert Bad.ran is False
+
+
+def test_step_limit_counts_blocked_steps_and_fails_the_agent():
+    rt = Runtime(max_steps=2)
+    aid = rt.spawn(Counter("not_allowed"), Policy(allowed_actions={"increment"}))
+    rt.start(aid)
+    assert [rt.step(aid)["event"] for _ in range(3)] == ["blocked", "blocked", "failed"]
+    assert rt.state(aid) == State.FAILED
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, 1.5, "3"])
+def test_invalid_max_steps_rejected(bad):
+    with pytest.raises(ValueError):
+        Runtime(max_steps=bad)
