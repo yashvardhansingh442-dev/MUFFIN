@@ -16,7 +16,7 @@
 
 </div>
 
-> **Status: early-stage research prototype (v0.1).** The repository contains a small, tested Python runtime of roughly 1,700 lines. The larger platform described in the docs is a design goal, not shipped functionality. Every section below says clearly whether something is **implemented**, **partial**, or **planned**. Third-party facts in this README were researched in **October 2026** and are linked in [References](#21-references); this field moves fast, so verify before relying on them.
+> **Status: early-stage research prototype (v0.1).** The repository contains a small, tested Python runtime of roughly 1,800 lines. The larger platform described in the docs is a design goal, not shipped functionality. Every section below says clearly whether something is **implemented**, **partial**, or **planned**. Third-party facts in this README were researched in **October 2026** and are linked in [References](#21-references); this field moves fast, so verify before relying on them.
 
 ---
 
@@ -55,7 +55,7 @@
 | **Today (v0.1)** | Agent SDK, state machine, default-deny safety layer (allowlist, parameter rules, budget, rate limit, constraints, kill switch), SQLite episodic memory, JSONL traces, `LLMAgent` + Anthropic provider. |
 | **Planned** | Human approval gates, standards-aligned hooks and telemetry, semantic and procedural memory, side-effect ledger, per-agent identity, multi-agent coordination. |
 | **Not** | A foundation model, an AGI project, a robotics OS, or a certified safety system. |
-| **Runtime dependencies** | None. Python 3.10+; optional `anthropic` for the live provider. |
+| **Runtime dependencies** | None. Python 3.10+ declared (CI tests 3.11 to 3.15); optional `anthropic` for the live provider. |
 
 ---
 
@@ -188,7 +188,7 @@ This is the category MUFFIN is closest to, and it is moving quickly:
 **Where MUFFIN differs, honestly:** the Microsoft toolkit is far broader (multiple languages, many framework adapters, identity, sandboxing). MUFFIN's current niche is different:
 
 1. **One small integrated core.** Lifecycle, memory, safety, and trace share a single state machine, so rollback restores agent state, spent budget, and memory together.
-2. **Readable in an afternoon.** About 1,700 lines, no dependencies, so it works as a reference implementation and a research testbed.
+2. **Readable in an afternoon.** About 1,800 lines, no dependencies, so it works as a reference implementation and a research testbed.
 3. **Research questions first.** It is a place to test ideas (restricted modes after untrusted input, side-effect ledgers, standards-aligned hooks) against a codebase small enough to change.
 
 ### 4.3 Memory systems (remember)
@@ -869,22 +869,22 @@ Injecting a clock into `SafetyLayer` makes rate-limit tests deterministic, which
 
 ## 14. Testing
 
-The suite has **99 tests** in six files and runs in well under a second. CI runs it on Python 3.11 through 3.15, then runs `examples/hello_agent.py` as a smoke test.
+The suite has **135 test cases** (95 test functions, some parametrized) in six files and runs in well under a second. CI runs it on Python 3.11 through 3.15, then runs `examples/hello_agent.py` as a smoke test.
 
-**Current status.** In the snapshot reviewed on 23 October 2026, all 99 tests pass locally on Python 3.12. An earlier snapshot had 13 failing tests; they were out-of-date assertions (message wording, the old single-`<input>` prompt format) and two broken trace tests, and were updated to match the code's behavior.
+**Current status.** In the snapshot reviewed on 25 October 2026, all 135 test cases pass locally on Python 3.12. An earlier snapshot had 13 failing tests; they were out-of-date assertions (message wording, the old single-`<input>` prompt format) and two broken trace tests, and were updated to match the code's behavior.
 
 | File | Tests | Covers |
 |---|---|---|
-| `tests/test_runtime.py` | 25 | Allowed actions execute and are remembered; default deny; total budget; rate limit including window expiry; constraint veto; fail-closed on a crashing constraint; pause and resume; kill preserves memory; kill does not wait for a running action, is recorded once however often it is repeated, and leaves later lifecycle calls refused; checkpoint and rollback restore state, memory, and budget; rollback is audited; an agent exception fails the agent without crashing the runtime; invalid transitions rejected; `run` stops when the agent leaves `running`; memory persists to disk; hostile costs (negative, `NaN`, `inf`, bool, string) are blocked and never spent; zero and normal costs still run |
+| `tests/test_runtime.py` | 28 | Allowed actions execute and are remembered; default deny; total budget; rate limit including window expiry; constraint veto; fail-closed on a crashing constraint; pause and resume; kill preserves memory; kill does not wait for a running action, is recorded once however often it is repeated, and leaves later lifecycle calls refused; checkpoint and rollback restore state, memory, and budget; rollback is audited; an agent exception fails the agent without crashing the runtime; invalid transitions rejected; `run` stops when the agent leaves `running`; memory persists to disk; hostile costs (negative, `NaN`, `inf`, bool, string) are blocked and never spent; zero and normal costs still run; mutating `params` inside `explain` or `act` cannot change what was approved or recorded |
 | `tests/test_param_rules.py` | 21 | Good and bad parameters; `email_domain` against smuggling tricks (second address, newline injection, look-alike and sub-domains, empty, `None`, non-string); unexpected and missing params fail closed; rules apply only to their own action; a crashing rule fails closed; `number_between`; `matches` uses `fullmatch`; `one_of` |
-| `tests/test_llm_agent.py` | 13 | Approved tool call runs with explanation traced; real-but-unlisted tool blocked; hallucinated tool blocked, not crashed; prompt injection cannot exceed the policy; malformed output is a safe no-action; model outage does not kill the agent; JSON in code fences and chatter; tool errors reported, not fatal; budget governs the model; history reaches the next prompt and rollback restores it; JSON-extraction edge cases; untrusted input and tool results cannot close or forge the `<input>` tag |
+| `tests/test_llm_agent.py` | 29 | Approved tool call runs with explanation traced; real-but-unlisted tool blocked; hallucinated tool blocked, not crashed; prompt injection cannot exceed the policy; malformed output is a safe no-action; model outage does not kill the agent; JSON in code fences and chatter; tool errors reported, not fatal; budget governs the model; history reaches the next prompt and rollback restores it; JSON-extraction edge cases; untrusted input and tool results cannot close or forge the `<input>` tag |
 | `tests/test_safety.py` | 19 | Invalid cost denied; unknown agent and unapproved action denied; budget cannot be exceeded; invalid policy budgets rejected; infinite budget allowed; kill switch denies actions; restore rejects invalid spend; rate limit |
-| `tests/test_memory.py` | 10 | Write and recent preserve order; agents have separate memories; `search` treats `%` and `_` literally; rollback deletes only the target agent's later events; invalid values and inputs rejected; unknown objects do not leak their repr; close prevents further use; file databases persist |
-| `tests/test_trace.py` | 11 | Unique ids; JSONL output; reserved fields (`decision_id`, `ts`); `agent_id` and `event` cannot be passed as extra fields; returned records are detached; invalid JSON numbers rejected; a failed write adds no entry; unknown objects do not use repr; invalid agent ids and events rejected |
+| `tests/test_memory.py` | 20 | Write and recent preserve order; agents have separate memories; `search` treats `%` and `_` literally; rollback deletes only the target agent's later events; invalid values and inputs rejected; unknown objects do not leak their repr; close prevents further use; file databases persist |
+| `tests/test_trace.py` | 18 | Unique ids; JSONL output; reserved fields (`decision_id`, `ts`); `agent_id` and `event` cannot be passed as extra fields; returned records are detached; invalid JSON numbers rejected; a failed write adds no entry; unknown objects do not use repr; invalid agent ids and events rejected |
 
 The project's rule is that a safety mechanism needs a test that proves it **blocks** something, because an untested safety mechanism is assumed broken.
 
-**Gaps worth closing** (also tracked in the [roadmap](#16-roadmap)): a hung `act()` that never returns (L15); agents that under-report cost as zero (L1); mutating `params` inside `act` (L6); rollback with an active rate limit; failure injection around `act`, memory, and trace writes; concurrent use; and tests against the live provider behind an opt-in flag.
+**Gaps worth closing** (also tracked in the [roadmap](#16-roadmap)): a hung `act()` that never returns (L15); agents that under-report cost as zero (L1); rollback with an active rate limit; failure injection around `act`, memory, and trace writes; concurrent use; and tests against the live provider behind an opt-in flag.
 
 ---
 
@@ -899,13 +899,13 @@ These are known gaps in the current code, listed so nobody relies on a guarantee
 | L3 | **Rollback is partial.** The rate-limit window is not restored, and external side effects cannot be undone. | Medium | See [section 10](#10-checkpoint-and-rollback-semantics) |
 | L4 | **Checkpoints do not survive a restart, and agent ids are random per spawn.** A SQLite memory file cannot be re-attached to "the same" agent in a new process. | Medium | Treat persistence as a log for inspection, not recovery |
 | L5 | **Only routed actions are governed.** An agent's own `act()` code can perform side effects that no policy can see. | Medium (by design) | Keep all side effects behind approved actions |
-| L6 | **Shared mutable params.** The same `params` dict is checked, then handed to `act()`. `Action` is `frozen`, but that protects the fields, not the dict, so code in `act()` can change the values that were approved, and the changed values are what the trace records (verified: an `email_domain`-checked recipient was swapped inside `act()`). | Medium | Do not mutate `action.params` inside `act`. Planned: hand `act()` a copy |
+| L6 | **Shared mutable params (fixed).** The runtime now snapshots the action after `decide()` and hands `act()` its own copy, so changes made inside `explain()` or `act()` cannot alter the values that were checked, traced, or remembered. A regression test covers both paths (`tests/test_runtime.py`). The copy is a deep copy; params that cannot be deep-copied fail the agent before anything executes. | Fixed | n/a |
 | L7 | **Failures after approval are handled, with limits.** An exception from `explain()`, memory or trace writes now fails the agent (state `failed`), and `outcome_unknown` or `outcome_recording_failed` is written to the trace when possible. If the trace backend itself is down, the failure may go unrecorded. | Low | Use reliable storage paths |
 | L8 | **The trace records content verbatim**, including perceptions, params, and outcomes. | Low-Medium | Do not feed secrets through agents in this version |
 | L9 | **`MUFFIN_*` variables in `.env.example` are not read.** | Low | Pass paths in code |
 | L10 | **Provider is thin.** `AnthropicCompleter` has no timeout or retry, a 500-token default that can truncate JSON replies, and no live-API tests. | Low | Raise `max_tokens`; wrap with your own retry |
 | L11 | **Small edge cases:** `one_of` uses equality, so `True` matches `1`; a model reply with `"action": null` and no `params` is reported as invalid parameters instead of "no action"; a failed `spawn` can leave an orphan policy registered because `SafetyLayer` has no `unregister`. | Low | n/a |
-| L12 | **Not designed or tested for concurrent use.** | Low | One runtime per thread or process |
+| L12 | **Concurrency is only partly covered.** `SafetyLayer` guards its state with a lock and the runtime serializes steps and lifecycle changes per agent; tests exercise `kill()` racing a running step. There are no stress tests, and the SQLite memory, trace file, and shared runtime are not verified under heavy concurrent use. | Low | One runtime per thread or process |
 | L13 | **No formal guarantees and no hardened boundary.** | n/a | Do not connect to critical systems or physical actuators |
 | L14 | **No step or model-call limit.** Blocked actions and `no_action` steps cost nothing, and nothing caps steps, model calls, or tool run time. A looping or injected agent can spend model tokens without touching the action budget. | Medium | Cap steps in your own loop; set provider and tool timeouts |
 | L15 | **`kill()` cannot interrupt a running action.** It trips the kill switch and reports `terminated` immediately, so nothing further is approved, but an `act()` already in progress runs to completion: its outcome is recorded, and the `killed` trace entry is written after it returns. A hung `act()` is therefore not stopped. | Medium | Give tools their own timeouts; run agents that call untrusted or slow tools in a separate process you can terminate |
@@ -933,7 +933,7 @@ A milestone is complete when its acceptance criteria are met, not when a folder,
 - [ ] Mark tool results as untrusted; consider a randomized delimiter (L2, remaining half)
 - [ ] **Restore the rate-limit window on rollback** (L3)
 - [ ] **Persist checkpoints and give agents stable ids** (L4)
-- [ ] Hand the agent a copy of `params` after the check (L6)
+- [x] Hand the agent a copy of `params` after the check (L6)
 - [x] Guard `explain`, memory, and trace failures (L7)
 - [ ] Add `SafetyLayer.unregister` so a failed `spawn` leaves no orphan policy (L11)
 - [ ] Read `MUFFIN_DB_PATH` and `MUFFIN_TRACE_PATH` (L9)
