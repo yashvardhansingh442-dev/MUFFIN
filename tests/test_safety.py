@@ -137,12 +137,28 @@ def test_strict_costs_ignores_agent_declared_cost():
     assert not layer.check("a", cheat).allowed
 
 
-def test_strict_costs_fails_closed_if_policy_is_mutated_after_register():
+def test_policy_changes_after_register_do_not_change_what_is_enforced():
     layer = SafetyLayer()
-    policy = Policy(allowed_actions={"x"}, costs={"x": 1}, strict_costs=True)
+    policy = Policy(allowed_actions={"x"}, max_total_cost=1, costs={"x": 1}, strict_costs=True)
     layer.register("a", policy)
     policy.allowed_actions.add("y")
+    policy.max_total_cost = 10**9
+    policy.costs["x"] = 0
+    policy.constraints.append(lambda action: None)
     assert not layer.check("a", Action("y", {}, cost=0)).allowed
+    spend = Action("x", {}, cost=0)
+    assert layer.check("a", spend).allowed
+    layer.commit("a", spend)
+    assert not layer.check("a", spend).allowed  # still charged 1 of a budget of 1
+
+
+def test_policy_param_rules_are_copied_on_register():
+    layer = SafetyLayer()
+    rule_list = [lambda params: None]
+    policy = Policy(allowed_actions={"x"}, param_rules={"x": rule_list})
+    layer.register("a", policy)
+    rule_list.append(lambda params: "blocked by later rule")
+    assert layer.check("a", Action("x", {})).allowed
 
 
 def test_non_strict_policy_still_falls_back_to_declared_cost():
