@@ -1015,11 +1015,12 @@ MUFFIN/
 ├── tests/                        test_runtime.py, test_param_rules.py, test_llm_agent.py,
 │                                 test_safety.py, test_memory.py, test_trace.py
 ├── examples/                     hello_agent.py, llm_agent.py
-└── mathematics/  systems/  simulation/  cognitive-architecture/  founder-intelligence/
+├── founder-intelligence/         Pillar 5 deliverables tracker, interview guide, interview and hypothesis logs
+└── mathematics/  systems/  simulation/  cognitive-architecture/
                                   placeholder folders for future research notes (empty for now)
 ```
 
-The five pillar folders map to the long-term research program (mathematics, systems engineering, physics and simulation, cognitive architecture, and founder intelligence). They are learning and research tracks, not finished modules, and the working rule for each is that ideas should become small, testable programs rather than passive notes.
+Of the five pillar folders, only `founder-intelligence/` has content so far. The five map to the long-term research program (mathematics, systems engineering, physics and simulation, cognitive architecture, and founder intelligence). They are learning and research tracks, not finished modules, and the working rule for each is that ideas should become small, testable programs rather than passive notes.
 
 ---
 
