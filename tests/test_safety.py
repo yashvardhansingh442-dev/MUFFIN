@@ -40,7 +40,6 @@ def test_budget_cannot_be_exceeded(safety):
     assert safety.check("agent-1", action).allowed
     safety.commit("agent-1", action)
 
-    assert safety.check("agent-1", action).denied if False else True
     verdict = safety.check("agent-1", action)
     assert not verdict.allowed
     assert "budget" in verdict.reason
@@ -116,3 +115,38 @@ def test_unregister_removes_agent():
     layer.unregister("a")
     layer.unregister("a")  # idempotent
     assert not layer.check("a", Action("x", {})).allowed
+
+
+def test_strict_costs_requires_a_cost_for_every_allowed_action():
+    with pytest.raises(ValueError):
+        SafetyLayer().register("a", Policy(allowed_actions={"x", "y"}, costs={"x": 1}, strict_costs=True))
+
+
+def test_strict_costs_must_be_a_bool():
+    with pytest.raises(TypeError):
+        SafetyLayer().register("a", Policy(allowed_actions={"x"}, costs={"x": 1}, strict_costs="yes"))
+
+
+def test_strict_costs_ignores_agent_declared_cost():
+    layer = SafetyLayer()
+    layer.register("a", Policy(allowed_actions={"x"}, max_total_cost=2, costs={"x": 1}, strict_costs=True))
+    cheat = Action("x", {}, cost=0)
+    for _ in range(2):
+        assert layer.check("a", cheat).allowed
+        layer.commit("a", cheat)
+    assert not layer.check("a", cheat).allowed
+
+
+def test_strict_costs_fails_closed_if_policy_is_mutated_after_register():
+    layer = SafetyLayer()
+    policy = Policy(allowed_actions={"x"}, costs={"x": 1}, strict_costs=True)
+    layer.register("a", policy)
+    policy.allowed_actions.add("y")
+    assert not layer.check("a", Action("y", {}, cost=0)).allowed
+
+
+def test_non_strict_policy_still_falls_back_to_declared_cost():
+    layer = SafetyLayer()
+    layer.register("a", Policy(allowed_actions={"x", "y"}, max_total_cost=1, costs={"x": 1}))
+    big = Action("y", {}, cost=5)
+    assert not layer.check("a", big).allowed
