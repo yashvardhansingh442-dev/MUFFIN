@@ -45,6 +45,9 @@ class Policy:
     param_rules: dict[str, list[ParamRule]] = field(default_factory=dict)
     # Trusted cost per action name; overrides the cost the agent declares.
     costs: dict[str, float] = field(default_factory=dict)
+    # When True, every allowed action must have an entry in `costs`, and the
+    # agent-declared `Action.cost` is never used. Closes the under-reporting gap (L1).
+    strict_costs: bool = False
 
 
 @dataclass(frozen=True)
@@ -103,6 +106,15 @@ class SafetyLayer:
         ):
             raise ValueError("costs must map action names to finite, non-negative numbers")
 
+        if not isinstance(policy.strict_costs, bool):
+            raise TypeError("strict_costs must be a bool")
+        if policy.strict_costs:
+            missing = sorted(policy.allowed_actions - set(policy.costs))
+            if missing:
+                raise ValueError(
+                    f"strict_costs requires a policy cost for every allowed action; missing: {missing}"
+                )
+
         if not isinstance(policy.param_rules, dict):
             raise TypeError("param_rules must be a dictionary")
 
@@ -130,6 +142,16 @@ class SafetyLayer:
             return "action cost must be a finite, non-negative number"
 
         return None
+
+    @staticmethod
+    def _effective_cost(policy: Policy, action: Action) -> float:
+        """Policy-owned cost wins; the agent's declared cost is a fallback only when
+        the policy is not strict. In strict mode a missing entry raises (fail closed)."""
+        if action.name in policy.costs:
+            return policy.costs[action.name]
+        if policy.strict_costs:
+            raise ValueError(f"no policy cost for action {action.name!r}")
+        return action.cost
 
     def register(self, agent_id: str, policy: Policy) -> None:
         if not isinstance(agent_id, str) or not agent_id:
@@ -194,7 +216,7 @@ class SafetyLayer:
         # Validate mutable policy state again in case it was changed after registration.
         self._validate_policy(policy)
 
-        if self._spent[agent_id] + policy.costs.get(action.name, action.cost) > policy.max_total_cost:
+        if self._spent[agent_id] + self._effective_cost(policy, action) > policy.max_total_cost:
             return Verdict(False, "total action budget exceeded")
 
         if policy.max_actions_per_window is not None:
@@ -240,7 +262,7 @@ class SafetyLayer:
                 raise ValueError("invalid safety clock")
 
             policy = self._policies[agent_id]
-            new_spent = self._spent[agent_id] + policy.costs.get(action.name, action.cost)
+            new_spent = self._spent[agent_id] + self._effective_cost(policy, action)
             if not math.isfinite(new_spent) or new_spent > policy.max_total_cost:
                 raise ValueError("commit would exceed the action budget")
 
