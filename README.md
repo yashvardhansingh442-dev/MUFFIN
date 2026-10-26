@@ -1019,10 +1019,10 @@ MUFFIN/
 ├── simulation/                   Pillar 3 tracker: physics and simulation deliverables
 ├── systems/                      Pillar 2 tracker: systems engineering deliverables
 ├── mathematics/                  Pillar 1 tracker: mathematics curriculum and builds
-└── cognitive-architecture/       placeholder folder for future research notes (empty for now)
+└── cognitive-architecture/       Pillar 4 tracker: cognitive architecture deliverables
 ```
 
-Of the five pillar folders, only `cognitive-architecture/` is still empty. The five map to the long-term research program (mathematics, systems engineering, physics and simulation, cognitive architecture, and founder intelligence). They are learning and research tracks, not finished modules, and the working rule for each is that ideas should become small, testable programs rather than passive notes.
+The five pillar folders each hold a tracker. They map to the long-term research program (mathematics, systems engineering, physics and simulation, cognitive architecture, and founder intelligence). They are learning and research tracks, not finished modules, and the working rule for each is that ideas should become small, testable programs rather than passive notes.
 
 ---
 
