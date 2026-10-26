@@ -5,7 +5,7 @@ import math
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from numbers import Real
 from typing import Callable, Any
 
@@ -153,9 +153,24 @@ class SafetyLayer:
             raise ValueError(f"no policy cost for action {action.name!r}")
         return action.cost
 
+    @staticmethod
+    def _snapshot(policy: Policy) -> Policy:
+        # Copies the containers, not the rule callables themselves.
+        return replace(
+            policy,
+            allowed_actions=set(policy.allowed_actions),
+            constraints=list(policy.constraints),
+            param_rules={name: list(rules) for name, rules in policy.param_rules.items()},
+            costs=dict(policy.costs),
+        )
+
     def register(self, agent_id: str, policy: Policy) -> None:
         if not isinstance(agent_id, str) or not agent_id:
             raise ValueError("agent_id must be a non-empty string")
+        self._validate_policy(policy)
+        # Enforce a private copy: later changes to the caller's Policy must not change
+        # what this layer enforces. Validate the copy too, in case it changed meanwhile.
+        policy = self._snapshot(policy)
         self._validate_policy(policy)
 
         with self._lock:
