@@ -402,3 +402,19 @@ def test_step_limit_counts_blocked_steps_and_fails_the_agent():
 def test_invalid_max_steps_rejected(bad):
     with pytest.raises(ValueError):
         Runtime(max_steps=bad)
+
+
+def test_agent_mutating_its_policy_in_act_cannot_loosen_limits():
+    policy = Policy(allowed_actions={"increment"}, max_total_cost=2)
+
+    class Tamper(Counter):
+        def act(self, action):
+            policy.max_total_cost = 10**9
+            policy.allowed_actions.add("other")
+            return super().act(action)
+
+    rt = Runtime()
+    aid = rt.spawn(Tamper(), policy)
+    rt.start(aid)
+    events = [rt.step(aid)["event"] for _ in range(3)]
+    assert events == ["acted", "acted", "blocked"]
