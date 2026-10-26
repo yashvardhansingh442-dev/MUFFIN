@@ -335,7 +335,7 @@ Everything below is exported from the top-level `muffin` package.
 
 ### 6.1 `Agent` and `Action`
 
-An `Action` is an immutable proposal: `Action(name, params={}, cost=1.0)`. It is **never executed directly**; the runtime submits it to the safety layer first. `cost` must be a finite number `>= 0`: the safety layer denies negative, `NaN`, `inf`, boolean and non-numeric costs. The agent still *declares* its own cost, so a custom agent can under-report it (see [limitation L1](#15-known-limitations-v01)).
+An `Action` is an immutable proposal: `Action(name, params={}, cost=1.0)`. It is **never executed directly**; the runtime submits it to the safety layer first. `cost` must be a finite number `>= 0`: the safety layer denies negative, `NaN`, `inf`, boolean and non-numeric costs. By default the agent still *declares* its own cost, so a custom agent can under-report it; set `Policy.costs` and `strict_costs=True` to charge policy-owned costs instead (see [limitation L1](#15-known-limitations-v01)).
 
 To write an agent, subclass `Agent` and implement `decide` and `act`. Everything else has a default.
 
@@ -357,6 +357,8 @@ Policy(
     max_actions_per_window: int | None = None,       # rate limit
     window_seconds: float = 60.0,
     constraints: list[Callable[[Action], str | None]] = [],        # custom vetoes
+    costs: dict[str, float] = {},                    # trusted cost per action; overrides Action.cost
+    strict_costs: bool = False,                      # True: every allowed action needs an entry in costs
     param_rules: dict[str, list[Callable[[dict], str | None]]] = {},   # per-action argument checks
 )
 ```
@@ -383,7 +385,7 @@ Rules are small functions over an action's `params` dict. They fail closed: a mi
 
 | Method | Purpose |
 |---|---|
-| `Runtime(db_path=":memory:", trace_path=None, safety=None)` | Create a runtime; pass a file path to persist memory and traces |
+| `Runtime(db_path=":memory:", trace_path=None, safety=None, max_steps=None)` | Create a runtime; `max_steps` caps steps per agent (blocked and no-action steps count; the agent then fails). Pass a file path to persist memory and traces |
 | `spawn(agent, policy) -> agent_id` | Register an agent with its policy |
 | `start / pause / resume / kill` | Lifecycle control |
 | `state(agent_id) -> State` | Current state |
@@ -444,7 +446,7 @@ A fuller, row-by-row threat register is planned as `docs/threat-model.md`; that 
 **Out of scope today (what it does not protect against):**
 
 - Agent code that performs side effects directly instead of through approved actions. The policy only governs what is routed through the runtime.
-- Malicious or buggy agent code that **declares its own `Action.cost`**. Invalid costs (negative, `NaN`, `inf`, boolean, non-numeric) are denied, but a cost of `0` never spends budget, so an agent can under-report (see [limitations](#15-known-limitations-v01), L1).
+- Malicious or buggy agent code that **declares its own `Action.cost`**, unless the policy sets `strict_costs=True` with a cost for every allowed action. Invalid costs (negative, `NaN`, `inf`, boolean, non-numeric) are always denied, but without strict costs a declared cost of `0` never spends budget (see [limitations](#15-known-limitations-v01), L1).
 - Interrupting an action that is already running. `kill()` stops further actions immediately, but an in-flight `act()` runs to completion and is recorded; the `killed` trace entry is written when it returns (L15).
 - Credential theft, sandbox escape, supply-chain compromise, and network exfiltration. There is no sandbox or identity layer.
 - Detecting that a goal was hijacked. The runtime limits what a hijacked agent can *do*; it does not notice the hijack.
@@ -869,22 +871,22 @@ Injecting a clock into `SafetyLayer` makes rate-limit tests deterministic, which
 
 ## 14. Testing
 
-The suite has **135 test cases** (95 test functions, some parametrized) in six files and runs in well under a second. CI runs it on Python 3.11 through 3.15, then runs `examples/hello_agent.py` as a smoke test.
+The suite has **153 test cases** (105 test functions, some parametrized) in six files and runs in well under a second. CI runs it on Python 3.11 through 3.15, then runs `examples/hello_agent.py` as a smoke test.
 
-**Current status.** In the snapshot reviewed on 25 October 2026, all 135 test cases pass locally on Python 3.12. An earlier snapshot had 13 failing tests; they were out-of-date assertions (message wording, the old single-`<input>` prompt format) and two broken trace tests, and were updated to match the code's behavior.
+**Current status.** In the snapshot reviewed on 26 October 2026, all 153 test cases pass locally on Python 3.12. An earlier snapshot had 13 failing tests; they were out-of-date assertions (message wording, the old single-`<input>` prompt format) and two broken trace tests, and were updated to match the code's behavior.
 
 | File | Tests | Covers |
 |---|---|---|
-| `tests/test_runtime.py` | 28 | Allowed actions execute and are remembered; default deny; total budget; rate limit including window expiry; constraint veto; fail-closed on a crashing constraint; pause and resume; kill preserves memory; kill does not wait for a running action, is recorded once however often it is repeated, and leaves later lifecycle calls refused; checkpoint and rollback restore state, memory, and budget; rollback is audited; an agent exception fails the agent without crashing the runtime; invalid transitions rejected; `run` stops when the agent leaves `running`; memory persists to disk; hostile costs (negative, `NaN`, `inf`, bool, string) are blocked and never spent; zero and normal costs still run; mutating `params` inside `explain` or `act` cannot change what was approved or recorded |
+| `tests/test_runtime.py` | 34 | Allowed actions execute and are remembered; default deny; total budget; rate limit including window expiry; constraint veto; fail-closed on a crashing constraint; pause and resume; kill preserves memory; kill does not wait for a running action, is recorded once however often it is repeated, and leaves later lifecycle calls refused; checkpoint and rollback restore state, memory, and budget; rollback is audited; an agent exception fails the agent without crashing the runtime; invalid transitions rejected; `run` stops when the agent leaves `running`; memory persists to disk; hostile costs (negative, `NaN`, `inf`, bool, string) are blocked and never spent; zero and normal costs still run; mutating `params` inside `explain` or `act` cannot change what was approved or recorded; step limit (`max_steps`) counts blocked steps and fails the agent; invalid `max_steps` rejected |
 | `tests/test_param_rules.py` | 21 | Good and bad parameters; `email_domain` against smuggling tricks (second address, newline injection, look-alike and sub-domains, empty, `None`, non-string); unexpected and missing params fail closed; rules apply only to their own action; a crashing rule fails closed; `number_between`; `matches` uses `fullmatch`; `one_of` |
 | `tests/test_llm_agent.py` | 29 | Approved tool call runs with explanation traced; real-but-unlisted tool blocked; hallucinated tool blocked, not crashed; prompt injection cannot exceed the policy; malformed output is a safe no-action; model outage does not kill the agent; JSON in code fences and chatter; tool errors reported, not fatal; budget governs the model; history reaches the next prompt and rollback restores it; JSON-extraction edge cases; untrusted input and tool results cannot close or forge the `<input>` tag |
-| `tests/test_safety.py` | 19 | Invalid cost denied; unknown agent and unapproved action denied; budget cannot be exceeded; invalid policy budgets rejected; infinite budget allowed; kill switch denies actions; restore rejects invalid spend; rate limit |
+| `tests/test_safety.py` | 31 | Invalid cost denied; unknown agent and unapproved action denied; budget cannot be exceeded; invalid policy budgets rejected; infinite budget allowed; kill switch denies actions; restore rejects invalid spend; rate limit; policy costs override a zero declared cost; invalid policy costs rejected; `unregister` is idempotent; `strict_costs` needs a cost for every allowed action, ignores declared cost, fails closed if the policy is mutated, and non-strict policies keep the fallback |
 | `tests/test_memory.py` | 20 | Write and recent preserve order; agents have separate memories; `search` treats `%` and `_` literally; rollback deletes only the target agent's later events; invalid values and inputs rejected; unknown objects do not leak their repr; close prevents further use; file databases persist |
 | `tests/test_trace.py` | 18 | Unique ids; JSONL output; reserved fields (`decision_id`, `ts`); `agent_id` and `event` cannot be passed as extra fields; returned records are detached; invalid JSON numbers rejected; a failed write adds no entry; unknown objects do not use repr; invalid agent ids and events rejected |
 
 The project's rule is that a safety mechanism needs a test that proves it **blocks** something, because an untested safety mechanism is assumed broken.
 
-**Gaps worth closing** (also tracked in the [roadmap](#16-roadmap)): a hung `act()` that never returns (L15); agents that under-report cost as zero (L1); rollback with an active rate limit; failure injection around `act`, memory, and trace writes; concurrent use; and tests against the live provider behind an opt-in flag.
+**Gaps worth closing** (also tracked in the [roadmap](#16-roadmap)): a hung `act()` that never returns (L15); agents that under-report cost as zero when `strict_costs` is off (L1); rollback with an active rate limit; failure injection around `act`, memory, and trace writes; concurrent use; and tests against the live provider behind an opt-in flag.
 
 ---
 
@@ -894,7 +896,7 @@ These are known gaps in the current code, listed so nobody relies on a guarantee
 
 | ID | Limitation | Severity | Workaround |
 |---|---|---|---|
-| L1 | **Budgets trust the agent's declared cost.** The safety layer rejects negative, `NaN`, infinite, boolean and non-numeric costs, but `Action.cost` is still set by the agent. A cost of `0` never spends budget, so a custom `Agent` can under-report freely (verified: 500 zero-cost actions ran against a budget of 1). `LLMAgent` takes costs from its tool table, so it is less exposed. | Medium | Define costs in trusted code; do not rely on budgets with untrusted agent code. A policy-owned cost table is on the roadmap |
+| L1 | **Budgets trust the agent's declared cost unless the policy owns costs.** The safety layer always rejects negative, `NaN`, infinite, boolean and non-numeric costs. With `Policy(costs=..., strict_costs=True)` every allowed action is charged its policy cost and the agent's declared cost is ignored. Without `strict_costs`, an action missing from `costs` is still charged the agent's declared cost, so a custom `Agent` can under-report (verified: 500 zero-cost actions ran against a budget of 1). `LLMAgent` takes costs from its tool table, so it is less exposed. | Medium (Low with `strict_costs`) | Set `strict_costs=True` for untrusted agent code; `strict_costs` is off by default |
 | L2 | **Prompt delimiters are a hint, not a boundary.** `LLMAgent.build_prompt` escapes `&`, `<` and `>` in the perception and history, so input cannot close or forge the `<input>` tag. The model can still be persuaded by the *content* of the input, and tool results are escaped data in the history rather than a separate trust level. | Medium | Treat the policy as the control; keep untrusted content out of tools' trusted outputs |
 | L3 | **Rollback is partial.** The rate-limit window is not restored, and external side effects cannot be undone. | Medium | See [section 10](#10-checkpoint-and-rollback-semantics) |
 | L4 | **Checkpoints do not survive a restart, and agent ids are random per spawn.** A SQLite memory file cannot be re-attached to "the same" agent in a new process. | Medium | Treat persistence as a log for inspection, not recovery |
@@ -904,10 +906,10 @@ These are known gaps in the current code, listed so nobody relies on a guarantee
 | L8 | **The trace records content verbatim**, including perceptions, params, and outcomes. | Low-Medium | Do not feed secrets through agents in this version |
 | L9 | **`MUFFIN_*` variables in `.env.example` are not read.** | Low | Pass paths in code |
 | L10 | **Provider is thin.** `AnthropicCompleter` has no timeout or retry, a 500-token default that can truncate JSON replies, and no live-API tests. | Low | Raise `max_tokens`; wrap with your own retry |
-| L11 | **Small edge cases:** `one_of` uses equality, so `True` matches `1`; a model reply with `"action": null` and no `params` is reported as invalid parameters instead of "no action"; a failed `spawn` can leave an orphan policy registered because `SafetyLayer` has no `unregister`. | Low | n/a |
+| L11 | **Small edge cases:** `one_of` uses equality, so `True` matches `1`; a model reply with `"action": null` and no `params` is reported as invalid parameters instead of "no action". | Low | n/a |
 | L12 | **Concurrency is only partly covered.** `SafetyLayer` guards its state with a lock and the runtime serializes steps and lifecycle changes per agent; tests exercise `kill()` racing a running step. There are no stress tests, and the SQLite memory, trace file, and shared runtime are not verified under heavy concurrent use. | Low | One runtime per thread or process |
 | L13 | **No formal guarantees and no hardened boundary.** | n/a | Do not connect to critical systems or physical actuators |
-| L14 | **No step or model-call limit.** Blocked actions and `no_action` steps cost nothing, and nothing caps steps, model calls, or tool run time. A looping or injected agent can spend model tokens without touching the action budget. | Medium | Cap steps in your own loop; set provider and tool timeouts |
+| L14 | **Step limit is opt-in; no model-call limit or timeouts.** `Runtime(max_steps=N)` caps steps per agent, but it defaults to `None`. Nothing yet caps model calls or tool run time, so a looping or injected agent can spend model tokens without touching the action budget. | Medium | Set `max_steps`; set provider and tool timeouts |
 | L15 | **`kill()` cannot interrupt a running action.** It trips the kill switch and reports `terminated` immediately, so nothing further is approved, but an `act()` already in progress runs to completion: its outcome is recorded, and the `killed` trace entry is written after it returns. A hung `act()` is therefore not stopped. | Medium | Give tools their own timeouts; run agents that call untrusted or slow tools in a separate process you can terminate |
 
 Agent-provided explanations are evidence, not proof. Rollback cannot reverse irreversible external effects. Memory persistence does not create learning.
@@ -928,16 +930,17 @@ A milestone is complete when its acceptance criteria are met, not when a folder,
 - [x] Make `kill()` take effect without waiting for a running action (L15, first half)
 - [ ] Stop a hung action: run tools under a timeout or in a separate process (L15, remaining half)
 - [x] Reject negative, non-finite, and non-numeric action costs (L1, first half)
-- [ ] **Take action costs from the policy, not the agent** (L1, remaining half)
+- [x] Take action costs from the policy, not the agent: `Policy.costs` and `strict_costs` (L1). Open: make `strict_costs` the default
 - [x] Escape untrusted input and history in `LLMAgent.build_prompt` (L2, first half)
 - [ ] Mark tool results as untrusted; consider a randomized delimiter (L2, remaining half)
 - [ ] **Restore the rate-limit window on rollback** (L3)
 - [ ] **Persist checkpoints and give agents stable ids** (L4)
 - [x] Hand the agent a copy of `params` after the check (L6)
 - [x] Guard `explain`, memory, and trace failures (L7)
-- [ ] Add `SafetyLayer.unregister` so a failed `spawn` leaves no orphan policy (L11)
+- [x] Add `SafetyLayer.unregister` so a failed `spawn` leaves no orphan policy (L11)
 - [ ] Read `MUFFIN_DB_PATH` and `MUFFIN_TRACE_PATH` (L9)
-- [ ] Add a step limit, a model-call budget, and timeouts (L14)
+- [x] Add a step limit: `Runtime(max_steps=...)` (L14, first part)
+- [ ] Add a model-call budget and timeouts (L14, remaining part)
 - [ ] Write `docs/threat-model.md` (referenced but not yet written), then turn each row into an adversarial test that runs in CI
 - [ ] Document state transitions and rollback semantics precisely; expand adversarial tests
 - [ ] Add `ruff` and `mypy` to CI; examples reproducible from a clean checkout
