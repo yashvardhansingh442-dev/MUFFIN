@@ -6,7 +6,7 @@ This document describes the layered architecture of MUFFIN.AI: what each layer i
 >
 > **Status:** design-stage. The layer structure and responsibilities come from the MUFFIN roadmap. Concrete interfaces, schemas, and tooling choices in this document are **proposed designs** and will change as prototypes teach us what works.
 >
-> **Known gaps in v0.1:** see the README's [known limitations](../README.md#15-known-limitations-v01) and the [threat model](threat-model.md). Where this document states a design goal that v0.1 does not yet meet, a note says so.
+> **Known gaps in v0.1:** see the README's [known limitations](../README.md#15-known-limitations-v01) and the README's [threat model](../README.md#72-threat-model). Where this document states a design goal that v0.1 does not yet meet, a note says so.
 
 ---
 
@@ -198,7 +198,7 @@ The runtime hosts a standard cognitive loop. **The agent developer implements on
 
 **Key rule:** an agent must not be able to bypass the safety check. Actions are submitted *to* the runtime and executed only if approved.
 
-> **v0.1 enforces this only for actions routed through the runtime.** `act()` is the agent's own code, so it can still perform side effects directly, and there is no process isolation yet (README limitation L5; threat model T5). Moving tool execution into the runtime is the planned fix.
+> **v0.1 enforces this only for actions routed through the runtime.** `act()` is the agent's own code, so it can still perform side effects directly, and there is no process isolation yet (README limitation L5). Moving tool execution into the runtime is the planned fix.
 
 ---
 
@@ -244,7 +244,7 @@ The runtime hosts a standard cognitive loop. **The agent developer implements on
 | **Rollback** | Restores a previous checkpoint |
 | **Kill** | Terminates with state preserved for post-mortem. Trips the kill switch at once (no further action is approved); an action already running finishes and is recorded (README L15) |
 
-> **v0.1 differs from this design.** The implemented states are `configured`, `running`, `paused`, `failed` and `terminated`. `spawn` already configures the agent (there is no separate `CREATED` state), the operation is `start`, and checkpoint is an operation, not a state. `rollback` leaves the agent `paused`, and it can also be applied from `failed`. Checkpoints live in process memory and are lost on restart, agents are not isolated from each other, and rollback does not restore the rate-limit window or undo external side effects (README sections 5.2, 10 and 15).
+> **v0.1 differs from this design.** The implemented states are `configured`, `running`, `paused`, `failed` and `terminated`. `spawn` already configures the agent (there is no separate `CREATED` state), the operation is `start`, and checkpoint is an operation, not a state. `rollback` leaves the agent `paused`. Rollback is refused from `failed` and `terminated`. Checkpoints live in process memory and are lost on restart, agents are not isolated from each other, and rollback does not restore the rate-limit window or undo external side effects (README sections 5.2, 10 and 15).
 
 ---
 
@@ -342,15 +342,17 @@ Safety is **engineering**: feedback loops, limits, monitoring, and control. It i
 The v0.1 safety layer (`safety.py`, `rules.py`) checks every proposed action in this order and stops at the first denial:
 
 1. **Kill switch:** tripped agents are denied everything
-2. **Allowed set:** action name must be on the policy's allowlist (default deny)
-3. **Parameter rules:** per-action argument checks (`muffin.rules`)
-4. **Total budget:** lifetime cost cap
-5. **Rate limit:** maximum actions per time window
-6. **Constraints:** custom functions that can veto an action
+2. **Policy registered:** an agent with no policy is denied
+3. **Action well-formed:** non-empty name, `params` is a dict, `cost` is a finite non-negative number (not a bool)
+4. **Allowed set:** action name must be on the policy's allowlist (default deny)
+5. **Total budget:** lifetime cost cap, using the policy-owned cost (`Policy.costs`) when set; with `strict_costs=True` the agent's declared cost is never used
+6. **Rate limit:** maximum actions per time window
+7. **Parameter rules:** per-action argument checks (`muffin.rules`)
+8. **Constraints:** custom functions that can veto an action
 
 Any exception raised during a check is converted into a denial (**fail closed**).
 
-**Not yet in this list:** validation of `Action.cost` before the budget check. A negative or `NaN` cost currently slips through (README limitation L1; tests for it are written).
+**Remaining gap:** without `strict_costs`, an action missing from `Policy.costs` is still charged the agent's declared cost (README limitation L1).
 
 **Parameter rule helpers** (`muffin.rules`): `required`, `only_keys`, `one_of`, `matches` (full-match regex), `max_len`, `number_between`, `email_domain`. They are written to resist common tricks: smuggled `@` signs, domain-suffix tricks, subdomains, multiple recipients, newline injection, path traversal, and wrong types (strings, booleans, NaN passed as numbers).
 
@@ -445,7 +447,7 @@ class MyAgent(Agent):
 ### Implemented SDK additions (v0.1)
 
 - **`Agent.explain()`** is an optional hook. Whatever it returns is recorded as `explanation` in the decision trace for acted, blocked, and no-action steps.
-- **`LLMAgent`** (`llm_agent.py`) uses a language model as the `decide` step. Each turn the model returns JSON `{"action", "params", "reason"}`. Untrusted input is delimited in `<input>` tags and the system prompt instructs the model to treat it as data. An escaping helper for `<`, `>` and `&` in that input exists (`_escape`) but is not applied yet (README limitation L2). Unknown or hallucinated tool names are passed through on purpose so the **safety layer, not the agent, says no**. Unparseable replies and model outages become safe no-actions.
+- **`LLMAgent`** (`llm_agent.py`) uses a language model as the `decide` step. Each turn the model returns JSON `{"action", "params", "reason"}`. Untrusted input is delimited in `<input>` tags and the system prompt instructs the model to treat it as data. `<`, `>` and `&` in that input and in the history are escaped so it cannot close or forge the tag, but delimiters are still only a hint to the model (README limitation L2). Unknown or hallucinated tool names are passed through on purpose so the **safety layer, not the agent, says no**. Unparseable replies and model outages become safe no-actions.
 - **Providers** (`providers.py`): an agent needs only a function `complete(system, prompt) -> str`. `AnthropicCompleter` is the bundled implementation (optional dependency `muffin-ai[llm]`). It follows the public SDK interface but is not exercised against the live API in the test suite.
 
 **Security stance:** assume the model can be fully compromised by prompt injection. Containment comes from the policy enforced outside the model, not from the model behaving well.
