@@ -363,7 +363,7 @@ Policy(
 )
 ```
 
-A constraint or parameter rule returns a **denial reason string**, or `None` to allow. `SafetyLayer.check()` returns a `Verdict(allowed: bool, reason: str)`. `SafetyLayer.register()` enforces a **private copy** of the policy (the sets, lists and dicts are copied; the rule functions themselves are not), so changing your `Policy` object after registering it, or from inside an agent, does not change what is enforced. To change a policy, register it again.
+A constraint or parameter rule returns a **denial reason string**, or `None` to allow. `SafetyLayer.check()` returns a `Verdict(allowed: bool, reason: str)`. `SafetyLayer.register()` enforces a **private copy** of the policy (the sets, lists and dicts are copied; the rule functions themselves are not), so changing your `Policy` object after registering it, or from inside an agent, does not change what is enforced. To change a live agent's limits, call `runtime.update_policy(agent_id, new_policy)` (or `SafetyLayer.update_policy`): it keeps the budget already spent, the rate-limit window and the kill switch, waits for any running step so the change cannot land between a check and its commit, records a `policy_updated` trace event, and rejects an invalid policy while leaving the current one in force. `register()` is for new agents and starts them with a fresh budget.
 
 ### 6.3 Parameter rules (`muffin.rules`)
 
@@ -796,6 +796,7 @@ runtime.rollback(agent_id, cp)                  # state, memory, and budget rewi
 print("after: ", agent.n, runtime.memory.count(agent_id), runtime.state(agent_id).value)
 
 runtime.resume(agent_id)
+runtime.update_policy(agent_id, new_policy)       # new_policy: any Policy; spend and rate window kept
 runtime.kill(agent_id, "operator stop")         # terminated; state and memory preserved
 ```
 
@@ -871,16 +872,16 @@ Injecting a clock into `SafetyLayer` makes rate-limit tests deterministic, which
 
 ## 14. Testing
 
-The suite has **155 test cases** (107 test functions, some parametrized) in six files and runs in well under a second. CI runs it on Python 3.11 through 3.15, then runs `examples/hello_agent.py` as a smoke test.
+The suite has **162 test cases** (114 test functions, some parametrized) in six files and runs in well under a second. CI runs it on Python 3.11 through 3.15, then runs `examples/hello_agent.py` as a smoke test.
 
-**Current status.** In the snapshot reviewed on 26 October 2026, all 155 test cases pass locally on Python 3.12. An earlier snapshot had 13 failing tests; they were out-of-date assertions (message wording, the old single-`<input>` prompt format) and two broken trace tests, and were updated to match the code's behavior.
+**Current status.** In the snapshot reviewed on 26 October 2026, all 162 test cases pass locally on Python 3.12. An earlier snapshot had 13 failing tests; they were out-of-date assertions (message wording, the old single-`<input>` prompt format) and two broken trace tests, and were updated to match the code's behavior.
 
 | File | Tests | Covers |
 |---|---|---|
-| `tests/test_runtime.py` | 35 | Allowed actions execute and are remembered; default deny; total budget; rate limit including window expiry; constraint veto; fail-closed on a crashing constraint; pause and resume; kill preserves memory; kill does not wait for a running action, is recorded once however often it is repeated, and leaves later lifecycle calls refused; checkpoint and rollback restore state, memory, and budget; rollback is audited; an agent exception fails the agent without crashing the runtime; invalid transitions rejected; `run` stops when the agent leaves `running`; memory persists to disk; hostile costs (negative, `NaN`, `inf`, bool, string) are blocked and never spent; zero and normal costs still run; mutating `params` inside `explain` or `act` cannot change what was approved or recorded; step limit (`max_steps`) counts blocked steps and fails the agent; invalid `max_steps` rejected |
+| `tests/test_runtime.py` | 38 | Allowed actions execute and are remembered; default deny; total budget; rate limit including window expiry; constraint veto; fail-closed on a crashing constraint; pause and resume; kill preserves memory; kill does not wait for a running action, is recorded once however often it is repeated, and leaves later lifecycle calls refused; checkpoint and rollback restore state, memory, and budget; rollback is audited; an agent exception fails the agent without crashing the runtime; invalid transitions rejected; `run` stops when the agent leaves `running`; memory persists to disk; hostile costs (negative, `NaN`, `inf`, bool, string) are blocked and never spent; zero and normal costs still run; mutating `params` inside `explain` or `act` cannot change what was approved or recorded; step limit (`max_steps`) counts blocked steps and fails the agent; invalid `max_steps` rejected |
 | `tests/test_param_rules.py` | 21 | Good and bad parameters; `email_domain` against smuggling tricks (second address, newline injection, look-alike and sub-domains, empty, `None`, non-string); unexpected and missing params fail closed; rules apply only to their own action; a crashing rule fails closed; `number_between`; `matches` uses `fullmatch`; `one_of` |
 | `tests/test_llm_agent.py` | 29 | Approved tool call runs with explanation traced; real-but-unlisted tool blocked; hallucinated tool blocked, not crashed; prompt injection cannot exceed the policy; malformed output is a safe no-action; model outage does not kill the agent; JSON in code fences and chatter; tool errors reported, not fatal; budget governs the model; history reaches the next prompt and rollback restores it; JSON-extraction edge cases; untrusted input and tool results cannot close or forge the `<input>` tag |
-| `tests/test_safety.py` | 32 | Invalid cost denied; unknown agent and unapproved action denied; budget cannot be exceeded; invalid policy budgets rejected; infinite budget allowed; kill switch denies actions; restore rejects invalid spend; rate limit; policy costs override a zero declared cost; invalid policy costs rejected; `unregister` is idempotent; `strict_costs` needs a cost for every allowed action, ignores declared cost, fails closed if the policy is mutated, and non-strict policies keep the fallback |
+| `tests/test_safety.py` | 36 | Invalid cost denied; unknown agent and unapproved action denied; budget cannot be exceeded; invalid policy budgets rejected; infinite budget allowed; kill switch denies actions; restore rejects invalid spend; rate limit; policy costs override a zero declared cost; invalid policy costs rejected; `unregister` is idempotent; `strict_costs` needs a cost for every allowed action, ignores declared cost, fails closed if the policy is mutated, and non-strict policies keep the fallback |
 | `tests/test_memory.py` | 20 | Write and recent preserve order; agents have separate memories; `search` treats `%` and `_` literally; rollback deletes only the target agent's later events; invalid values and inputs rejected; unknown objects do not leak their repr; close prevents further use; file databases persist |
 | `tests/test_trace.py` | 18 | Unique ids; JSONL output; reserved fields (`decision_id`, `ts`); `agent_id` and `event` cannot be passed as extra fields; returned records are detached; invalid JSON numbers rejected; a failed write adds no entry; unknown objects do not use repr; invalid agent ids and events rejected |
 
