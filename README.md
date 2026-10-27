@@ -2,21 +2,244 @@
 
 # 🧁 MUFFIN.AI
 
-### Cognitive infrastructure for AI agents
+### A safety-and-memory runtime for AI agents
 
-**Lifecycle · Memory · Safety · Traces**
+**The agent proposes. MUFFIN decides, remembers, and records.**
 
 [![CI](https://github.com/yashvardhansingh442-dev/MUFFIN/actions/workflows/ci.yml/badge.svg)](https://github.com/yashvardhansingh442-dev/MUFFIN/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Dependencies](https://img.shields.io/badge/runtime%20deps-0-brightgreen)
+![Tests](https://img.shields.io/badge/tests-165%20passing%20(local)-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-85%25-yellowgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Status](https://img.shields.io/badge/status-early%20prototype-orange)
 
-*We are not building the brain. We are building the infrastructure that helps intelligent systems remain useful, inspectable, and controllable over time.*
+[What it is](#what-is-muffin) · [See it work](#see-it-work-in-30-seconds) · [Dashboard](#project-dashboard) · [Quick start](#11-quick-start) · [Limitations](#15-known-limitations-v01) · [Roadmap](#16-roadmap)
 
 </div>
 
-> **Status: early-stage research prototype (v0.1).** The repository contains a small, tested Python runtime of roughly 1,800 lines. The larger platform described in the docs is a design goal, not shipped functionality. Every section below says clearly whether something is **implemented**, **partial**, or **planned**. Third-party facts in this README were researched in **October 2026** and are linked in [References](#21-references); this field moves fast, so verify before relying on them.
+> **Status: early-stage research prototype (v0.1).** A small, tested Python runtime of about 1,500 lines of code. The larger platform described in the docs is a design goal, not shipped functionality. Every section says whether something is **implemented**, **partial**, or **planned**. Third-party facts were researched in **October 2026** and are linked in [References](#21-references); this field moves fast, so verify before relying on them.
+
+---
+
+## What is MUFFIN?
+
+**In one sentence:** MUFFIN is a small Python library that sits between an AI agent and the real world, so the agent can only *ask* to do things, while MUFFIN checks the rules, allows or blocks each request, and keeps a record of everything.
+
+**Why it matters.** An AI agent that can send emails, change files, call APIs or spend money is useful, but it can also be tricked or can simply be wrong. Telling it "please be careful" in a prompt is not a security control. MUFFIN moves the control out of the prompt and into code that the agent cannot talk its way around.
+
+**An analogy.** Think of airport security plus a flight recorder. Every request passes a checkpoint with fixed rules (security), and every decision is written down so you can replay what happened (the recorder).
+
+```mermaid
+flowchart LR
+    subgraph WITHOUT["Without MUFFIN"]
+        A1["AI agent"] -->|"does whatever it decides"| W1[("Email, files, APIs, money")]
+    end
+    subgraph WITH["With MUFFIN"]
+        A2["AI agent"] -->|"proposes an action"| M{{"MUFFIN runtime"}}
+        M -->|"allowed"| W2[("Real world")]
+        M -->|"blocked"| X["Denied and logged"]
+        M -.->|"every decision"| L[("Trace and memory")]
+    end
+```
+
+### What MUFFIN does: four jobs
+
+| Job | Plain meaning | What exists today |
+|---|---|---|
+| **Lifecycle** | Start, pause, resume, roll back and emergency-stop an agent | ✅ State machine, checkpoint and rollback, kill switch |
+| **Safety** | Decide what the agent is *allowed* to do | ✅ Allowlist, argument rules, budget, rate limit, custom vetoes |
+| **Memory** | Remember what happened | ✅ Episodic memory in SQLite (🔲 semantic and procedural memory planned) |
+| **Traces** | Explain what happened and why | ✅ Append-only decision trace, JSONL output |
+
+### What MUFFIN is not
+
+- ❌ Not an AI model, and not "AGI". It wraps agents; it does not replace them.
+- ❌ Not a sandbox. Everything runs in one Python process, so code that does its own side effects outside MUFFIN is not governed (see [L5](#15-known-limitations-v01)).
+- ❌ Not certified or production-ready. Do not connect it to critical systems.
+
+---
+
+## See it work in 30 seconds
+
+An agent tries to send two emails. Our policy only allows addresses at `example.com`.
+
+```python
+from muffin import Action, Agent, Policy, Runtime, rules
+
+
+class Mailer(Agent):
+    def __init__(self):
+        self.queue = ["ops@example.com", "attacker@evil.test"]
+
+    def decide(self):
+        return Action("send_email", {"to": self.queue.pop(0)}) if self.queue else None
+
+    def act(self, action):
+        return f"sent to {action.params['to']}"
+
+
+policy = Policy(
+    allowed_actions={"send_email"},
+    max_total_cost=10,
+    costs={"send_email": 1},
+    param_rules={"send_email": [rules.only_keys("to"), rules.email_domain("to", "example.com")]},
+)
+runtime = Runtime()
+agent_id = runtime.spawn(Mailer(), policy)
+runtime.start(agent_id)
+
+for _ in range(2):
+    r = runtime.step(agent_id)
+    print(r["event"], "->", r.get("outcome") or r["reason"])
+```
+
+```text
+acted -> sent to ops@example.com
+blocked -> parameter rule violated: 'to' domain 'evil.test' not in ['example.com']
+```
+
+The agent never got to send the second email. The block, the reason and the attempted action are all in the trace. More examples are in the [usage guide](#12-usage-guide).
+
+### How one step works
+
+```mermaid
+flowchart TD
+    S(["Input arrives"]) --> P["Agent perceives and decides"]
+    P --> Q{"Action proposed?"}
+    Q -->|"no"| N["Trace: no_action"]
+    Q -->|"yes"| C{"Safety check"}
+    C -->|"denied"| B["Memory and trace: blocked"]
+    C -->|"allowed"| R["Trace: action_started"]
+    R --> E["Agent executes the action"]
+    E --> D["Charge budget, write memory, trace: acted"]
+```
+
+### Words used in this README
+
+| Term | Meaning |
+|---|---|
+| **Agent** | A program that decides what to do next (a hand-written one, or a language model) |
+| **Action** | A *request* to do something, such as "send an email to X". It is not executed until approved |
+| **Policy** | The rules for one agent: which actions, which arguments, how much budget, how fast |
+| **Step** | One loop: perceive, decide, check, act, record |
+| **Trace** | The permanent log of every decision, including blocked ones |
+| **Checkpoint / rollback** | Save the agent's internal state, then restore it later (it cannot undo emails already sent) |
+| **Kill switch** | Immediately stop approving anything for an agent |
+
+---
+
+## Project dashboard
+
+*Snapshot of 27 October 2026. Numbers were measured on the code in this repository (Python 3.12, local machine); the commands to reproduce them are at the end of this section.*
+
+### At a glance
+
+| | |
+|---|---|
+| 📦 **Source code** | About 1,530 non-blank lines across 9 modules in `src/muffin/`, with **0 runtime dependencies** |
+| 🧪 **Tests** | **165 test cases** in 6 files (about 1,000 lines), running in under a second |
+| 📊 **Line coverage** | **85%** overall (weakest: the live model provider at 46%, the runtime's failure paths at 73%) |
+| ⚡ **Overhead** | Safety check: about **7 to 10 µs** median per action. Full step with in-memory storage: about **120 µs** (one run on one machine, so read it as an order of magnitude, not a benchmark) |
+| 🛡️ **Enforcement** | 8 ordered safety checks, 7 argument rules, 5 lifecycle states |
+| ⚠️ **Honesty** | 15 documented limitations, each with a severity and a workaround |
+
+### Where the code lives
+
+```mermaid
+pie showData
+    title Non-blank lines of code per module (src/muffin, 1,534 total)
+    "runtime.py" : 529
+    "safety.py" : 262
+    "memory.py" : 233
+    "llm_agent.py" : 226
+    "trace.py" : 86
+    "rules.py" : 67
+    "agent.py" : 66
+    "providers.py + __init__.py" : 65
+```
+
+### Tests and coverage
+
+```mermaid
+xychart-beta
+    title "Test cases per file (165 total)"
+    x-axis ["safety", "runtime", "llm_agent", "param_rules", "memory", "trace"]
+    y-axis "tests" 0 --> 45
+    bar [39, 38, 29, 21, 20, 18]
+```
+
+```mermaid
+xychart-beta
+    title "Line coverage per module (%, 85 overall)"
+    x-axis ["trace", "__init__", "rules", "memory", "agent", "llm_agent", "safety", "runtime", "providers"]
+    y-axis "percent" 0 --> 100
+    bar [100, 100, 98, 93, 92, 91, 86, 73, 46]
+```
+
+The low bars are honest signals, not hidden. `providers.py` needs a live API key to test, and most of the untested `runtime.py` lines are rare failure paths (see the test gaps in [section 14](#14-testing)).
+
+### How well does it cover the OWASP agentic risks?
+
+Self-assessed against the ten risks in the OWASP Top 10 for Agentic Applications 2026 (details in [section 7.3](#73-coverage-against-the-owasp-agentic-top-10)). This is a map of the work ahead, not a score.
+
+```mermaid
+pie showData
+    title OWASP agentic risks, v0.1 coverage (10 risks)
+    "Partial coverage" : 4
+    "No coverage yet" : 5
+    "Not applicable yet" : 1
+```
+
+### Known limitations by severity
+
+```mermaid
+pie showData
+    title The 15 documented limitations
+    "Medium" : 6
+    "Low" : 6
+    "Low-Medium" : 1
+    "Fixed" : 1
+    "Not applicable (no guarantees)" : 1
+```
+
+### Roadmap progress
+
+| Stage | Goal | Done | Progress |
+|---|---|---|---|
+| **A** | Make the core runtime dependable | 12 of 22 | `███████████░░░░░░░░░` 55% |
+| **B** | Validate the problem with real developers | 0 of 3 | `░░░░░░░░░░░░░░░░░░░░` 0% |
+| **C** | A useful first vertical slice | 0 of 5 | `░░░░░░░░░░░░░░░░░░░░` 0% |
+| **D** | Expand only after validation | 0 of 6 | `░░░░░░░░░░░░░░░░░░░░` 0% |
+| **E** | Long-term cognitive infrastructure | 0 of 4 | `░░░░░░░░░░░░░░░░░░░░` 0% |
+
+Overall, **12 of 40** milestones are done. The full checklist is in [section 16](#16-roadmap).
+
+<details>
+<summary><b>Reproduce these numbers</b></summary>
+
+```bash
+pip install -e ".[dev]" pytest-cov
+python -m pytest -q --cov=muffin --cov-report=term     # tests and coverage
+python -m pytest --collect-only -q | grep :: | cut -d: -f1 | sort | uniq -c   # tests per file
+for f in src/muffin/*.py; do echo "$(grep -cv '^\s*$' $f) $f"; done           # non-blank lines
+```
+
+Overhead was measured by timing `SafetyLayer.check` over 20,000 calls with 3 to 23 argument rules, and `Runtime.step` over 5,000 calls with in-memory storage. Re-run on your own hardware before quoting it.
+
+</details>
+
+---
+
+## Who is this for?
+
+| If you are... | Start here |
+|---|---|
+| **New and just curious** | [What is MUFFIN?](#what-is-muffin), then [See it work](#see-it-work-in-30-seconds) |
+| **A developer building a tool-using agent** | [Quick start](#11-quick-start), [Usage guide](#12-usage-guide), [API reference](#6-core-concepts-and-api-reference) |
+| **A security reviewer** | [Safety model](#7-safety-model), [OWASP coverage](#73-coverage-against-the-owasp-agentic-top-10), [Known limitations](#15-known-limitations-v01) |
+| **A researcher** | [Thesis](#2-the-thesis), [Research agenda](#17-research-agenda) |
+| **A contributor** | [Roadmap](#16-roadmap), [Contributing](#19-contributing), [Repository layout](#18-repository-layout-and-docs-map) |
 
 ---
 
@@ -43,19 +266,6 @@
 19. [Contributing](#19-contributing)
 20. [Security, license, and author](#20-security-license-and-author)
 21. [References](#21-references)
-
----
-
-## At a glance
-
-| | |
-|---|---|
-| **What it is** | A runtime that wraps an AI agent and owns lifecycle, action permissions, episodic memory, and a decision trace. The agent *proposes*; the runtime *decides*. |
-| **Core idea** | Treat the model as untrusted. Enforce policy in the execution path, outside the agent's control, instead of relying on prompts. |
-| **Today (v0.1)** | Agent SDK, state machine, default-deny safety layer (allowlist, parameter rules, budget, rate limit, constraints, kill switch), SQLite episodic memory, JSONL traces, `LLMAgent` + Anthropic provider. |
-| **Planned** | Human approval gates, standards-aligned hooks and telemetry, semantic and procedural memory, side-effect ledger, per-agent identity, multi-agent coordination. |
-| **Not** | A foundation model, an AGI project, a robotics OS, or a certified safety system. |
-| **Runtime dependencies** | None. Python 3.10+ declared (CI tests 3.11 to 3.15); optional `anthropic` for the live provider. |
 
 ---
 
@@ -188,7 +398,7 @@ This is the category MUFFIN is closest to, and it is moving quickly:
 **Where MUFFIN differs, honestly:** the Microsoft toolkit is far broader (multiple languages, many framework adapters, identity, sandboxing). MUFFIN's current niche is different:
 
 1. **One small integrated core.** Lifecycle, memory, safety, and trace share a single state machine, so rollback restores agent state, spent budget, and memory together.
-2. **Readable in an afternoon.** About 1,800 lines, no dependencies, so it works as a reference implementation and a research testbed.
+2. **Readable in an afternoon.** About 1,500 lines of code, no dependencies, so it works as a reference implementation and a research testbed.
 3. **Research questions first.** It is a place to test ideas (restricted modes after untrusted input, side-effect ledgers, standards-aligned hooks) against a codebase small enough to change.
 
 ### 4.3 Memory systems (remember)
@@ -550,6 +760,7 @@ Common fields on every entry: `decision_id` (32 hex chars), `agent_id`, `ts` (Un
 | `checkpoint` | `checkpoint_id`, `step` |
 | `rollback` | `checkpoint_id`, `memory_events_removed`, `step`, `state` |
 | `killed` | `reason`, `step` |
+| `policy_updated` | `state` (a live agent's policy was replaced; spent budget and rate window kept) |
 
 A real entry:
 
@@ -885,6 +1096,8 @@ The suite has **165 test cases** (117 test functions, some parametrized) in six 
 | `tests/test_safety.py` | 39 | Invalid cost denied; unknown agent and unapproved action denied; budget cannot be exceeded; invalid policy budgets rejected; infinite budget allowed; kill switch denies actions; restore rejects invalid spend; rate limit; policy costs override a zero declared cost; invalid policy costs rejected; `unregister` is idempotent; `strict_costs` needs a cost for every allowed action, ignores declared cost, fails closed if the policy is mutated, and non-strict policies keep the fallback |
 | `tests/test_memory.py` | 20 | Write and recent preserve order; agents have separate memories; `search` treats `%` and `_` literally; rollback deletes only the target agent's later events; invalid values and inputs rejected; unknown objects do not leak their repr; close prevents further use; file databases persist |
 | `tests/test_trace.py` | 18 | Unique ids; JSONL output; reserved fields (`decision_id`, `ts`); `agent_id` and `event` cannot be passed as extra fields; returned records are detached; invalid JSON numbers rejected; a failed write adds no entry; unknown objects do not use repr; invalid agent ids and events rejected |
+
+**Coverage.** Measured with `pytest-cov` on 27 October 2026: **85%** of lines overall. The lowest modules are `providers.py` (46%, needs a live API key) and `runtime.py` (73%, mostly rare failure paths); charts are in the [project dashboard](#project-dashboard).
 
 The project's rule is that a safety mechanism needs a test that proves it **blocks** something, because an untested safety mechanism is assumed broken.
 
