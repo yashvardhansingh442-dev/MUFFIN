@@ -45,9 +45,10 @@ class Policy:
     param_rules: dict[str, list[ParamRule]] = field(default_factory=dict)
     # Trusted cost per action name; overrides the cost the agent declares.
     costs: dict[str, float] = field(default_factory=dict)
-    # When True, every allowed action must have an entry in `costs`, and the
-    # agent-declared `Action.cost` is never used. Closes the under-reporting gap (L1).
-    strict_costs: bool = False
+    # On by default: every allowed action must have an entry in `costs`, and the
+    # agent-declared `Action.cost` is never used (closes the under-reporting gap, L1).
+    # Pass strict_costs=False only to trust the cost the agent declares.
+    strict_costs: bool = True
 
 
 @dataclass(frozen=True)
@@ -112,7 +113,9 @@ class SafetyLayer:
             missing = sorted(policy.allowed_actions - set(policy.costs))
             if missing:
                 raise ValueError(
-                    f"strict_costs requires a policy cost for every allowed action; missing: {missing}"
+                    f"strict_costs requires a policy cost for every allowed action; missing: {missing}. "
+                    "Add them to Policy(costs={...}), or pass strict_costs=False to trust "
+                    "the cost the agent declares"
                 )
 
         if not isinstance(policy.param_rules, dict):
