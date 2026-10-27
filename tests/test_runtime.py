@@ -43,7 +43,7 @@ class Counter(Agent):
 def make(agent=None, **policy_kwargs):
     rt = Runtime()
     policy_kwargs.setdefault("allowed_actions", {"increment"})
-    aid = rt.spawn(agent or Counter(), Policy(**policy_kwargs))
+    aid = rt.spawn(agent or Counter(), Policy(**policy_kwargs, strict_costs=False))
     rt.start(aid)
     return rt, aid
 
@@ -72,7 +72,7 @@ def test_total_budget_enforced():
 def test_rate_limit_enforced_and_window_expires():
     now = [0.0]
     rt = Runtime(safety=SafetyLayer(clock=lambda: now[0]))
-    aid = rt.spawn(Counter(), Policy({"increment"}, max_actions_per_window=2, window_seconds=10))
+    aid = rt.spawn(Counter(), Policy({"increment"}, max_actions_per_window=2, window_seconds=10, strict_costs=False))
     rt.start(aid)
     assert [rt.step(aid)["event"] for _ in range(3)] == ["acted", "acted", "blocked"]
     now[0] = 11.0
@@ -166,7 +166,7 @@ def test_run_stops_when_agent_leaves_running_state():
 def test_memory_persists_to_disk(tmp_path):
     db = str(tmp_path / "mem.db")
     rt = Runtime(db_path=db)
-    aid = rt.spawn(Counter(), Policy({"increment"}))
+    aid = rt.spawn(Counter(), Policy({"increment"}, strict_costs=False))
     rt.start(aid)
     rt.step(aid)
     del rt
@@ -189,7 +189,7 @@ class _CostAgent(Agent):
 @pytest.mark.parametrize("bad_cost", [-1.0, -100, float("nan"), float("inf"), True, "1"])
 def test_invalid_cost_is_blocked(bad_cost):
     rt = Runtime()
-    agent_id = rt.spawn(_CostAgent(bad_cost), Policy({"x"}, max_total_cost=1))
+    agent_id = rt.spawn(_CostAgent(bad_cost), Policy({"x"}, max_total_cost=1, strict_costs=False))
     rt.start(agent_id)
     entry = rt.step(agent_id)
     assert entry["event"] == "blocked"
@@ -200,7 +200,7 @@ def test_invalid_cost_is_blocked(bad_cost):
 def test_zero_and_normal_cost_still_allowed():
     for cost in (0, 0.5, 1):
         rt = Runtime()
-        agent_id = rt.spawn(_CostAgent(cost), Policy({"x"}, max_total_cost=1))
+        agent_id = rt.spawn(_CostAgent(cost), Policy({"x"}, max_total_cost=1, strict_costs=False))
         rt.start(agent_id)
         assert rt.step(agent_id)["event"] == "acted"
 
@@ -224,7 +224,7 @@ class _BlockingAgent(Agent):
 def test_kill_does_not_wait_for_a_running_action():
     agent = _BlockingAgent()
     rt = Runtime()
-    aid = rt.spawn(agent, Policy({"work"}))
+    aid = rt.spawn(agent, Policy({"work"}, strict_costs=False))
     rt.start(aid)
 
     results = []
@@ -264,7 +264,7 @@ def test_kill_does_not_wait_for_a_running_action():
 def test_kill_while_running_is_recorded_once_even_if_repeated():
     agent = _BlockingAgent()
     rt = Runtime()
-    aid = rt.spawn(agent, Policy({"work"}))
+    aid = rt.spawn(agent, Policy({"work"}, strict_costs=False))
     rt.start(aid)
 
     stepper = threading.Thread(target=lambda: rt.step(aid))
@@ -284,7 +284,7 @@ def test_kill_while_running_is_recorded_once_even_if_repeated():
 
 def test_kill_while_idle_is_immediate_and_recorded_once():
     rt = Runtime()
-    aid = rt.spawn(Counter(), Policy({"increment"}))
+    aid = rt.spawn(Counter(), Policy({"increment"}, strict_costs=False))
     rt.start(aid)
     rt.kill(aid, "done")
     rt.kill(aid, "again")
@@ -297,7 +297,7 @@ def test_kill_while_idle_is_immediate_and_recorded_once():
 def test_lifecycle_calls_after_a_pending_kill_are_refused():
     agent = _BlockingAgent()
     rt = Runtime()
-    aid = rt.spawn(agent, Policy({"work"}))
+    aid = rt.spawn(agent, Policy({"work"}, strict_costs=False))
     rt.start(aid)
 
     stepper = threading.Thread(target=lambda: rt.step(aid))
@@ -337,8 +337,7 @@ class _MutatingAgent(Agent):
 
 def _send_policy():
     return Policy(
-        {"send"}, param_rules={"send": [rules.email_domain("to", "example.com")]}
-    )
+        {"send"}, param_rules={"send": [rules.email_domain("to", "example.com")]}, strict_costs=False)
 
 
 def test_mutating_params_inside_act_cannot_change_what_was_approved_or_recorded():
@@ -381,7 +380,7 @@ def test_uncopyable_params_fail_the_agent_and_do_not_execute():
             Bad.ran = True
 
     rt = Runtime()
-    aid = rt.spawn(Bad(), Policy({"x"}))
+    aid = rt.spawn(Bad(), Policy({"x"}, strict_costs=False))
     rt.start(aid)
     entry = rt.step(aid)
 
@@ -392,7 +391,7 @@ def test_uncopyable_params_fail_the_agent_and_do_not_execute():
 
 def test_step_limit_counts_blocked_steps_and_fails_the_agent():
     rt = Runtime(max_steps=2)
-    aid = rt.spawn(Counter("not_allowed"), Policy(allowed_actions={"increment"}))
+    aid = rt.spawn(Counter("not_allowed"), Policy(allowed_actions={"increment"}, strict_costs=False))
     rt.start(aid)
     assert [rt.step(aid)["event"] for _ in range(3)] == ["blocked", "blocked", "failed"]
     assert rt.state(aid) == State.FAILED
@@ -405,7 +404,7 @@ def test_invalid_max_steps_rejected(bad):
 
 
 def test_agent_mutating_its_policy_in_act_cannot_loosen_limits():
-    policy = Policy(allowed_actions={"increment"}, max_total_cost=2)
+    policy = Policy(allowed_actions={"increment"}, max_total_cost=2, strict_costs=False)
 
     class Tamper(Counter):
         def act(self, action):
@@ -422,17 +421,17 @@ def test_agent_mutating_its_policy_in_act_cannot_loosen_limits():
 
 def test_runtime_update_policy_changes_limits_without_resetting_spend():
     rt = Runtime()
-    aid = rt.spawn(Counter(), Policy(allowed_actions={"increment"}, max_total_cost=3))
+    aid = rt.spawn(Counter(), Policy(allowed_actions={"increment"}, max_total_cost=3, strict_costs=False))
     rt.start(aid)
     assert [rt.step(aid)["event"] for _ in range(2)] == ["acted", "acted"]
-    rt.update_policy(aid, Policy(allowed_actions={"increment"}, max_total_cost=3))
+    rt.update_policy(aid, Policy(allowed_actions={"increment"}, max_total_cost=3, strict_costs=False))
     assert [rt.step(aid)["event"] for _ in range(2)] == ["acted", "blocked"]
     assert any(e["event"] == "policy_updated" for e in rt.trace.for_agent(aid))
 
 
 def test_runtime_update_policy_rejected_for_terminated_or_unknown_agent():
     rt = Runtime()
-    policy = Policy(allowed_actions={"increment"})
+    policy = Policy(allowed_actions={"increment"}, strict_costs=False)
     aid = rt.spawn(Counter(), policy)
     rt.kill(aid)
     with pytest.raises(MuffinRuntimeError):
@@ -451,7 +450,7 @@ def test_runtime_update_policy_waits_for_a_running_step():
             return super().act(action)
 
     rt = Runtime()
-    aid = rt.spawn(Slow(), Policy(allowed_actions={"increment"}, max_total_cost=1))
+    aid = rt.spawn(Slow(), Policy(allowed_actions={"increment"}, max_total_cost=1, strict_costs=False))
     rt.start(aid)
     stepper = threading.Thread(target=rt.step, args=(aid,))
     stepper.start()
@@ -459,7 +458,7 @@ def test_runtime_update_policy_waits_for_a_running_step():
     updated = threading.Event()
 
     def update():
-        rt.update_policy(aid, Policy(allowed_actions={"increment"}, max_total_cost=1))
+        rt.update_policy(aid, Policy(allowed_actions={"increment"}, max_total_cost=1, strict_costs=False))
         updated.set()
 
     updater = threading.Thread(target=update)
