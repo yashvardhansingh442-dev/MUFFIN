@@ -345,14 +345,14 @@ The v0.1 safety layer (`safety.py`, `rules.py`) checks every proposed action in 
 2. **Policy registered:** an agent with no policy is denied
 3. **Action well-formed:** non-empty name, `params` is a dict, `cost` is a finite non-negative number (not a bool)
 4. **Allowed set:** action name must be on the policy's allowlist (default deny)
-5. **Total budget:** lifetime cost cap, using the policy-owned cost (`Policy.costs`) when set; with `strict_costs=True` the agent's declared cost is never used
+5. **Total budget:** lifetime cost cap, charged at the policy-owned cost (`Policy.costs`); with the default `strict_costs=True` the agent's declared cost is never used
 6. **Rate limit:** maximum actions per time window
 7. **Parameter rules:** per-action argument checks (`muffin.rules`)
 8. **Constraints:** custom functions that can veto an action
 
 Any exception raised during a check is converted into a denial (**fail closed**).
 
-**Remaining gap:** without `strict_costs`, an action missing from `Policy.costs` is still charged the agent's declared cost (README limitation L1).
+**Remaining gap:** a policy that opts out with `strict_costs=False` still charges the agent's declared cost for any action missing from `Policy.costs` (README limitation L1).
 
 **Parameter rule helpers** (`muffin.rules`): `required`, `only_keys`, `one_of`, `matches` (full-match regex), `max_len`, `number_between`, `email_domain`. They are written to resist common tricks: smuggled `@` signs, domain-suffix tricks, subdomains, multiple recipients, newline injection, path traversal, and wrong types (strings, booleans, NaN passed as numbers).
 
@@ -360,6 +360,7 @@ Any exception raised during a check is converted into a denial (**fail closed**)
 Policy(
     allowed_actions={"send_email"},
     max_total_cost=10,
+    costs={"send_email": 5},
     param_rules={"send_email": [
         rules.only_keys("to", "body"),
         rules.email_domain("to", "example.com"),
