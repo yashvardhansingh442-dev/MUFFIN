@@ -32,7 +32,7 @@ TOOLS = [
 def setup(model, allowed=("add",), **policy_kwargs):
     rt = Runtime()
     agent = LLMAgent(model, TOOLS, goal="do arithmetic")
-    aid = rt.spawn(agent, Policy(set(allowed), **policy_kwargs))
+    aid = rt.spawn(agent, Policy(set(allowed), **policy_kwargs, strict_costs=False))
     rt.start(aid)
     return rt, agent, aid
 
