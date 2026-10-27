@@ -32,8 +32,7 @@ def run_one(policy, action):
 EMAIL_POLICY = Policy(
     allowed_actions={"send_email"},
     param_rules={"send_email": [rules.only_keys("to", "body"), rules.email_domain("to", "example.com"),
-                                rules.max_len("body", 200)]},
-)
+                                rules.max_len("body", 200)]}, strict_costs=False)
 
 
 def test_allowed_tool_with_good_params_runs():
@@ -76,7 +75,7 @@ def test_missing_params_fail_closed():
 
 
 def test_rules_apply_only_to_their_own_action():
-    policy = Policy({"send_email", "ping"}, param_rules={"send_email": [rules.required("to")]})
+    policy = Policy({"send_email", "ping"}, param_rules={"send_email": [rules.required("to")]}, strict_costs=False)
     r, _ = run_one(policy, Action("ping", {}))
     assert r["event"] == "acted"
 
@@ -85,7 +84,7 @@ def test_rule_that_crashes_fails_closed():
     def broken(_params):
         raise RuntimeError("rule bug")
 
-    r, agent = run_one(Policy({"x"}, param_rules={"x": [broken]}), Action("x", {}))
+    r, agent = run_one(Policy({"x"}, param_rules={"x": [broken]}, strict_costs=False), Action("x", {}))
     assert r["event"] == "blocked" and "failing closed" in r["reason"]
     assert agent.ran == []
 
