@@ -166,3 +166,42 @@ def test_non_strict_policy_still_falls_back_to_declared_cost():
     layer.register("a", Policy(allowed_actions={"x", "y"}, max_total_cost=1, costs={"x": 1}))
     big = Action("y", {}, cost=5)
     assert not layer.check("a", big).allowed
+
+
+def test_update_policy_keeps_spend_and_applies_new_limits():
+    layer = SafetyLayer()
+    layer.register("a", Policy(allowed_actions={"x"}, max_total_cost=5, costs={"x": 1}))
+    spend = Action("x", {}, cost=1)
+    for _ in range(3):
+        layer.commit("a", spend)
+    layer.update_policy("a", Policy(allowed_actions={"x"}, max_total_cost=3, costs={"x": 1}))
+    assert not layer.check("a", spend).allowed  # 3 already spent, new budget is 3
+    layer.update_policy("a", Policy(allowed_actions={"x"}, max_total_cost=4, costs={"x": 1}))
+    assert layer.check("a", spend).allowed
+
+
+def test_update_policy_rejects_invalid_policy_and_keeps_the_old_one():
+    layer = SafetyLayer()
+    layer.register("a", Policy(allowed_actions={"x"}))
+    with pytest.raises((ValueError, TypeError)):
+        layer.update_policy("a", Policy(allowed_actions={"x"}, costs={"x": -1}))
+    assert layer.check("a", Action("x", {})).allowed
+
+
+def test_update_policy_unknown_agent_and_copy_semantics():
+    layer = SafetyLayer()
+    with pytest.raises(ValueError):
+        layer.update_policy("nobody", Policy(allowed_actions={"x"}))
+    policy = Policy(allowed_actions={"x"})
+    layer.register("a", Policy(allowed_actions={"x"}))
+    layer.update_policy("a", policy)
+    policy.allowed_actions.add("y")
+    assert not layer.check("a", Action("y", {})).allowed
+
+
+def test_update_policy_keeps_the_kill_switch():
+    layer = SafetyLayer()
+    layer.register("a", Policy(allowed_actions={"x"}))
+    layer.trip_kill_switch("a", "test")
+    layer.update_policy("a", Policy(allowed_actions={"x"}))
+    assert not layer.check("a", Action("x", {})).allowed
