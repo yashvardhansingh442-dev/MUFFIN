@@ -67,6 +67,7 @@ def main(live: bool) -> None:
     policy = Policy(
         allowed_actions={"lookup_price", "send_email"},
         max_total_cost=10,
+        costs={"lookup_price": 1, "send_email": 5},
         param_rules={
             "lookup_price": [rules.only_keys("fruit"), rules.one_of("fruit", ["apple", "pear"])],
             "send_email": [rules.only_keys("to", "body"), rules.email_domain("to", "example.com"),
