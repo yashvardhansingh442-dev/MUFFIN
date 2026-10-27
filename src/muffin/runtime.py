@@ -107,6 +107,19 @@ class Runtime:
             agent_id, {State.PAUSED}, State.RUNNING, "resumed"
         )
 
+    def update_policy(self, agent_id: str, policy: Policy) -> None:
+        """Change a live agent's limits, keeping its spent budget and rate-limit window.
+
+        Waits for a running step to finish, so a change never lands between a safety
+        check and its commit. Terminated agents cannot be updated.
+        """
+        handle = self._handle(agent_id)
+        with self._guard(agent_id, handle):
+            if handle.state == State.TERMINATED:
+                raise MuffinRuntimeError(f"agent {agent_id} is terminated")
+            self.safety.update_policy(agent_id, policy)
+            self.trace.record(agent_id, "policy_updated", state=handle.state.value)
+
     def kill(self, agent_id: str, reason: str = "operator") -> None:
         """Terminate an agent and preserve its memory for post-mortem review.
 
