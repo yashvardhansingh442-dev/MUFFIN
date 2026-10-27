@@ -418,3 +418,54 @@ def test_agent_mutating_its_policy_in_act_cannot_loosen_limits():
     rt.start(aid)
     events = [rt.step(aid)["event"] for _ in range(3)]
     assert events == ["acted", "acted", "blocked"]
+
+
+def test_runtime_update_policy_changes_limits_without_resetting_spend():
+    rt = Runtime()
+    aid = rt.spawn(Counter(), Policy(allowed_actions={"increment"}, max_total_cost=3))
+    rt.start(aid)
+    assert [rt.step(aid)["event"] for _ in range(2)] == ["acted", "acted"]
+    rt.update_policy(aid, Policy(allowed_actions={"increment"}, max_total_cost=3))
+    assert [rt.step(aid)["event"] for _ in range(2)] == ["acted", "blocked"]
+    assert any(e["event"] == "policy_updated" for e in rt.trace.for_agent(aid))
+
+
+def test_runtime_update_policy_rejected_for_terminated_or_unknown_agent():
+    rt = Runtime()
+    policy = Policy(allowed_actions={"increment"})
+    aid = rt.spawn(Counter(), policy)
+    rt.kill(aid)
+    with pytest.raises(MuffinRuntimeError):
+        rt.update_policy(aid, policy)
+    with pytest.raises(MuffinRuntimeError):
+        rt.update_policy("nobody", policy)
+
+
+def test_runtime_update_policy_waits_for_a_running_step():
+    entered, release = threading.Event(), threading.Event()
+
+    class Slow(Counter):
+        def act(self, action):
+            entered.set()
+            release.wait(timeout=5)
+            return super().act(action)
+
+    rt = Runtime()
+    aid = rt.spawn(Slow(), Policy(allowed_actions={"increment"}, max_total_cost=1))
+    rt.start(aid)
+    stepper = threading.Thread(target=rt.step, args=(aid,))
+    stepper.start()
+    assert entered.wait(timeout=5)
+    updated = threading.Event()
+
+    def update():
+        rt.update_policy(aid, Policy(allowed_actions={"increment"}, max_total_cost=1))
+        updated.set()
+
+    updater = threading.Thread(target=update)
+    updater.start()
+    assert not updated.wait(timeout=0.3)  # blocked while the step is running
+    release.set()
+    stepper.join(timeout=5)
+    updater.join(timeout=5)
+    assert updated.is_set()
