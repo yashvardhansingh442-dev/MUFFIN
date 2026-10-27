@@ -12,7 +12,7 @@ The agent proposes; the runtime decides. A minimal run::
             return f"Hello, {action.params['name']}!"
 
     rt = Runtime()
-    aid = rt.spawn(Greeter(), Policy(allowed_actions={"greet"}, max_total_cost=3))
+    aid = rt.spawn(Greeter(), Policy(allowed_actions={"greet"}, max_total_cost=3, costs={"greet": 1}))
     rt.start(aid)
     print(rt.step(aid)["outcome"])      # Hello, Ada!
 
