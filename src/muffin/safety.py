@@ -164,14 +164,29 @@ class SafetyLayer:
             costs=dict(policy.costs),
         )
 
+    def _checked_copy(self, policy: Policy) -> Policy:
+        # Enforce a private copy: later changes to the caller's Policy must not change
+        # what this layer enforces. Validate the copy too, in case it changed meanwhile.
+        self._validate_policy(policy)
+        policy = self._snapshot(policy)
+        self._validate_policy(policy)
+        return policy
+
+    def update_policy(self, agent_id: str, policy: Policy) -> None:
+        """Replace a registered agent's policy. Unlike register(), the budget already
+        spent, the rate-limit window and the kill switch are kept. A policy that fails
+        validation raises and leaves the current one in force."""
+        policy = self._checked_copy(policy)
+
+        with self._lock:
+            if agent_id not in self._policies:
+                raise ValueError("no policy registered for agent")
+            self._policies[agent_id] = policy
+
     def register(self, agent_id: str, policy: Policy) -> None:
         if not isinstance(agent_id, str) or not agent_id:
             raise ValueError("agent_id must be a non-empty string")
-        self._validate_policy(policy)
-        # Enforce a private copy: later changes to the caller's Policy must not change
-        # what this layer enforces. Validate the copy too, in case it changed meanwhile.
-        policy = self._snapshot(policy)
-        self._validate_policy(policy)
+        policy = self._checked_copy(policy)
 
         with self._lock:
             self._policies[agent_id] = policy
