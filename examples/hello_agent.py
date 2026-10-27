@@ -49,7 +49,7 @@ def show(label: str, result: dict) -> None:
 def main() -> None:
     TRACE_PATH.unlink(missing_ok=True)     # start every run with a fresh trace file
     rt = Runtime(trace_path=str(TRACE_PATH))
-    policy = Policy(allowed_actions={"greet"}, max_total_cost=3)
+    policy = Policy(allowed_actions={"greet"}, max_total_cost=3, costs={"greet": 1})
     agent = Greeter()
     aid = rt.spawn(agent, policy)
     rt.start(aid)
