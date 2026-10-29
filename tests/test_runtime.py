@@ -468,3 +468,39 @@ def test_runtime_update_policy_waits_for_a_running_step():
     stepper.join(timeout=5)
     updater.join(timeout=5)
     assert updated.is_set()
+
+
+# ---- Runtime.from_env (README limitation L9) ----------------------------
+
+
+def test_from_env_reads_db_and_trace_paths(tmp_path, monkeypatch):
+    db, trace = tmp_path / "d" / "m.db", tmp_path / "t" / "m.jsonl"
+    monkeypatch.setenv("MUFFIN_DB_PATH", str(db))
+    monkeypatch.setenv("MUFFIN_TRACE_PATH", str(trace))
+    with Runtime.from_env() as rt:
+        aid = rt.spawn(Counter(), Policy({"increment"}, costs={"increment": 1}))
+        rt.start(aid)
+        rt.step(aid)
+    assert db.exists()
+    assert trace.read_text(encoding="utf-8").count("\n") >= 3
+
+
+def test_from_env_defaults_when_unset_or_empty(monkeypatch):
+    monkeypatch.delenv("MUFFIN_DB_PATH", raising=False)
+    monkeypatch.setenv("MUFFIN_TRACE_PATH", "")
+    with Runtime.from_env() as rt:
+        assert rt.memory.count("nobody") == 0
+
+
+def test_from_env_explicit_arguments_win_and_pass_through(tmp_path, monkeypatch):
+    monkeypatch.setenv("MUFFIN_DB_PATH", str(tmp_path / "ignored.db"))
+    with Runtime.from_env(db_path=":memory:", max_steps=3) as rt:
+        assert rt.max_steps == 3
+    assert not (tmp_path / "ignored.db").exists()
+
+
+def test_plain_runtime_never_reads_the_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("MUFFIN_DB_PATH", str(tmp_path / "ambient.db"))
+    with Runtime():
+        pass
+    assert not (tmp_path / "ambient.db").exists()
