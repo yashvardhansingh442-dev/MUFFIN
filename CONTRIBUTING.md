@@ -19,7 +19,7 @@ pytest
 python examples/hello_agent.py
 ```
 
-Requires Python 3.10+.
+Requires Python 3.10+. Before opening a PR run `ruff check .`, `mypy` and `pytest` (CI runs all three).
 
 ## Project layout
 
