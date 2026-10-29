@@ -1,4 +1,3 @@
-import math
 import pytest
 
 from muffin.agent import Action
